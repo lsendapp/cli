@@ -232,8 +232,8 @@ Exit codes:
 
 Failure stdout with --json:
   {{
-    "ok": false,
     "command": "send",
+    "ok": false,
     "code": "target_not_found",
     "error": "No device found with alias \"...\".",
     "hint": "Run `lsend scan --json` first and use the device IP, or pass an IP address directly."

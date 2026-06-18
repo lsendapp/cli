@@ -139,8 +139,8 @@ NDJSON events: `ready` → `transfer_started` → `file_saved` → `transfer_com
 
 ```json
 {
-  "ok": false,
   "command": "send",
+  "ok": false,
   "code": "target_not_found",
   "error": "No device found with alias \"...\". Run `lsend scan --json` first or pass an IP address.",
   "hint": "Run `lsend scan --json` first and use the device IP, or pass an IP address directly."

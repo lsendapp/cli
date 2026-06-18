@@ -96,8 +96,8 @@ fn device_type_label(device_type: &DeviceType) -> String {
 
 #[derive(Debug, Serialize)]
 pub struct ErrorEnvelope {
-    pub ok: bool,
     pub command: &'static str,
+    pub ok: bool,
     pub code: &'static str,
     pub error: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -106,8 +106,8 @@ pub struct ErrorEnvelope {
 
 pub fn error_envelope(command: &'static str, err: &CliError) -> ErrorEnvelope {
     ErrorEnvelope {
-        ok: false,
         command,
+        ok: false,
         code: err.code(),
         error: err.to_string(),
         hint: err.hint(),
@@ -233,6 +233,17 @@ mod tests {
         let envelope = error_envelope("receive", &err);
         assert_eq!(envelope.code, "port_in_use");
         assert!(envelope.hint.is_some());
+    }
+
+    #[test]
+    fn error_envelope_serializes_command_before_ok() {
+        let err = CliError::NoFiles;
+        let envelope = error_envelope("send", &err);
+        let json = serde_json::to_string(&envelope).expect("serialize");
+        let command_pos = json.find("\"command\"").expect("command field");
+        let ok_pos = json.find("\"ok\"").expect("ok field");
+        assert!(command_pos < ok_pos);
+        assert!(json.starts_with("{\"command\":"));
     }
 
     #[test]

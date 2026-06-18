@@ -75,7 +75,7 @@ Check exit code and JSON envelope:
 | 2 | Target not found / no files / invalid alias |
 | 3 | Port 53317 in use |
 
-Failure JSON: `{"ok":false,"command":"...","code":"port_in_use","error":"...","hint":"..."}`
+Failure JSON: `{"command":"...","ok":false,"code":"port_in_use","error":"...","hint":"..."}`
 
 ## More detail
 
