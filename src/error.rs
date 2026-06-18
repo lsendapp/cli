@@ -37,7 +37,7 @@ impl CliError {
                     .to_string(),
             ),
             Self::NoFiles => Some(
-                "Pass at least one existing file or directory path to send.".to_string(),
+                "Pass file paths, or use --text (stdin), --message \"...\", or --clipboard.".to_string(),
             ),
             Self::Other(_) => None,
         }

@@ -14,4 +14,5 @@ pub(crate) mod receive_pin;
 pub(crate) mod scan_server;
 pub(crate) mod send;
 pub(crate) mod server;
+pub(crate) mod text_send;
 pub(crate) mod util;

@@ -29,10 +29,14 @@ Parse `.devices[].ip` from the JSON object. Prefer IP over alias for send.
 
 ```bash
 lsend send <IP_FROM_SCAN> /path/to/file --json --no-scan
+echo "hello" | lsend send <IP_FROM_SCAN> --text --json --no-scan
+lsend send <IP_FROM_SCAN> --message "hello" --json --no-scan
+lsend send <IP_FROM_SCAN> --clipboard --json --no-scan
 ```
 
 - **`--no-scan`** avoids a slow implicit rescan when the target is an alias
-- Add **`--pin`** if the receiver sets `LSEND_RECEIVE_PIN`
+- Add **`--pin`** if the receiver requires a PIN
+- **`--text`** reads UTF-8 from stdin; **`--message`** sends inline text; **`--clipboard`** sends plain clipboard text
 
 Success JSON includes `"resolved_via": "ip"` and `"files"[].status`.
 

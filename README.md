@@ -34,6 +34,9 @@ lsend receive
 
 # Send files to a device (IP address or alias from scan)
 lsend send 192.168.1.42 ./photo.png ./notes.txt
+echo "hello" | lsend send 192.168.1.42 --text
+lsend send 192.168.1.42 --message "hello"
+lsend send 192.168.1.42 --clipboard
 ```
 
 ### Global options
@@ -54,6 +57,9 @@ lsend send 192.168.1.42 ./photo.png ./notes.txt
 | `scan` | `--timeout MS` | How long to wait for responses, in milliseconds (default: 1500) |
 | `send` | `--pin PIN` | PIN when sending to a PIN-protected receiver |
 | `send` | `--no-scan` | Do not scan for alias; use IP or fail fast |
+| `send` | `--text` | Read UTF-8 text from stdin (pipe) |
+| `send` | `--message TEXT` | Send inline text |
+| `send` | `--clipboard` | Send plain text from the system clipboard |
 | `receive` | `--dir PATH` | Directory where received files are saved (default: Downloads) |
 | `receive` | `--once` | Exit after the first completed transfer |
 

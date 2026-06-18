@@ -14,6 +14,7 @@ mod receive_pin;
 mod scan_server;
 mod send;
 mod server;
+mod text_send;
 mod util;
 
 use anyhow::Result;
@@ -66,6 +67,9 @@ async fn run() -> Result<(), i32> {
         Commands::Send {
             target,
             paths,
+            text,
+            message,
+            clipboard,
             pin,
             no_scan,
         } => send::send_files(
@@ -73,6 +77,9 @@ async fn run() -> Result<(), i32> {
             &identity,
             &target,
             &paths,
+            text,
+            message.as_deref(),
+            clipboard,
             pin.as_deref(),
             no_scan,
             output,

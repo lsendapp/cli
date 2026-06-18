@@ -57,9 +57,20 @@ pub enum Commands {
         /// Target device IP or alias.
         target: String,
 
-        /// Files or directories to send.
-        #[arg(required = true)]
+        /// Files or directories to send (omit when using --text, --message, or --clipboard).
         paths: Vec<String>,
+
+        /// Read text from stdin (pipe). Example: echo "hello" | localsend send <IP> --text
+        #[arg(long, conflicts_with = "message")]
+        text: bool,
+
+        /// Send an inline text message (UTF-8).
+        #[arg(long, conflicts_with = "text")]
+        message: Option<String>,
+
+        /// Send plain text from the system clipboard.
+        #[arg(long, conflicts_with_all = ["text", "message"])]
+        clipboard: bool,
 
         /// PIN if the receiver requires one.
         #[arg(long)]

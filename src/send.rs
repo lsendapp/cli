@@ -18,6 +18,10 @@ use crate::error::CliError;
 use crate::identity::Identity;
 use crate::network::build_http_client;
 use crate::output::{DeviceJson, OutputOptions, SendFileResult, SendResult, print_json};
+use crate::text_send::{
+    TEXT_FILE_TYPE, read_clipboard_text, read_message_text, read_stdin_text, text_file_name,
+    text_preview,
+};
 
 const CHUNK_SIZE: usize = 512 * 1024;
 
@@ -26,12 +30,15 @@ pub async fn send_files(
     identity: &Identity,
     target: &str,
     paths: &[String],
+    text_stdin: bool,
+    message: Option<&str>,
+    clipboard: bool,
     pin: Option<&str>,
     no_scan: bool,
     output: OutputOptions,
 ) -> Result<()> {
     let (device, resolved_via) = resolve_target(target, config, identity, !no_scan).await?;
-    let files = collect_files(paths).await?;
+    let files = collect_inputs(paths, text_stdin, message, clipboard).await?;
     if files.is_empty() {
         return Err(CliError::NoFiles.into());
     }
@@ -58,9 +65,15 @@ pub async fn send_files(
         download: false,
     };
 
+    let include_text_preview = files.len() == 1 && files[0].file_type == TEXT_FILE_TYPE;
     let file_map: HashMap<String, FileDto> = files
         .iter()
         .map(|f| {
+            let preview = if include_text_preview {
+                f.in_memory_preview()
+            } else {
+                None
+            };
             (
                 f.id.clone(),
                 FileDto {
@@ -69,7 +82,7 @@ pub async fn send_files(
                     size: f.size,
                     file_type: f.file_type.clone(),
                     sha256: None,
-                    preview: None,
+                    preview,
                     metadata: None,
                 },
             )
@@ -120,7 +133,7 @@ pub async fn send_files(
                     .iter()
                     .map(|local| SendFileResult {
                         name: local.file_name.clone(),
-                        path: local.path.display().to_string(),
+                        path: local.display_source(),
                         size: local.size,
                         status: "skipped",
                     })
@@ -141,105 +154,29 @@ pub async fn send_files(
             }
             results.push(SendFileResult {
                 name: local.file_name.clone(),
-                path: local.path.display().to_string(),
+                path: local.display_source(),
                 size: local.size,
                 status: "skipped",
             });
             continue;
         };
 
-        if output.show_human_progress() {
-            let pb = ProgressBar::new(local.size);
-            pb.set_style(
-                ProgressStyle::with_template("{msg} [{bar:40.cyan/blue}] {bytes}/{total_bytes}")
-                    .unwrap()
-                    .progress_chars("=>-"),
-            );
-            pb.set_message(local.file_name.clone());
-            let pb_reader = pb.clone();
-
-            let (tx, rx) = mpsc::channel(4);
-            let path = local.path.clone();
-            let reader_task = tokio::spawn(async move {
-                let file = File::open(&path).await?;
-                let mut reader = BufReader::new(file);
-                let mut buffer = vec![0u8; CHUNK_SIZE];
-                loop {
-                    let n = reader.read(&mut buffer).await?;
-                    if n == 0 {
-                        break;
-                    }
-                    if tx.send(buffer[..n].to_vec()).await.is_err() {
-                        break;
-                    }
-                    pb_reader.inc(n as u64);
-                }
-                Ok::<(), anyhow::Error>(())
-            });
-
-            let upload_result = match &client {
-                LsHttpClient::V2(c) => {
-                    c.upload(
-                        protocol.clone(),
-                        &device.ip,
-                        device.port,
-                        None,
-                        &response.session_id,
-                        &local.id,
-                        token,
-                        rx,
-                    )
-                    .await
-                }
-                LsHttpClient::V3(_) => unreachable!(),
-            };
-
-            reader_task.await??;
-            pb.finish_and_clear();
-            upload_result.map_err(|e| anyhow::anyhow!("Upload failed for {}: {e}", local.file_name))?;
-        } else {
-            let (tx, rx) = mpsc::channel(4);
-            let path = local.path.clone();
-            let reader_task = tokio::spawn(async move {
-                let file = File::open(&path).await?;
-                let mut reader = BufReader::new(file);
-                let mut buffer = vec![0u8; CHUNK_SIZE];
-                loop {
-                    let n = reader.read(&mut buffer).await?;
-                    if n == 0 {
-                        break;
-                    }
-                    if tx.send(buffer[..n].to_vec()).await.is_err() {
-                        break;
-                    }
-                }
-                Ok::<(), anyhow::Error>(())
-            });
-
-            let upload_result = match &client {
-                LsHttpClient::V2(c) => {
-                    c.upload(
-                        protocol.clone(),
-                        &device.ip,
-                        device.port,
-                        None,
-                        &response.session_id,
-                        &local.id,
-                        token,
-                        rx,
-                    )
-                    .await
-                }
-                LsHttpClient::V3(_) => unreachable!(),
-            };
-
-            reader_task.await??;
-            upload_result.map_err(|e| anyhow::anyhow!("Upload failed for {}: {e}", local.file_name))?;
-        }
+        upload_file(
+            &client,
+            &protocol,
+            &device.ip,
+            device.port,
+            &response.session_id,
+            local,
+            token,
+            output,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Upload failed for {}: {e}", local.file_name))?;
 
         results.push(SendFileResult {
             name: local.file_name.clone(),
-            path: local.path.display().to_string(),
+            path: local.display_source(),
             size: local.size,
             status: "sent",
         });
@@ -260,13 +197,159 @@ pub async fn send_files(
     Ok(())
 }
 
+async fn upload_file(
+    client: &LsHttpClient,
+    protocol: &ProtocolType,
+    ip: &str,
+    port: u16,
+    session_id: &str,
+    local: &LocalFile,
+    token: &str,
+    output: OutputOptions,
+) -> Result<()> {
+    let progress = output.show_human_progress().then(|| {
+        let pb = ProgressBar::new(local.size);
+        pb.set_style(
+            ProgressStyle::with_template("{msg} [{bar:40.cyan/blue}] {bytes}/{total_bytes}")
+                .unwrap()
+                .progress_chars("=>-"),
+        );
+        pb.set_message(local.file_name.clone());
+        pb
+    });
+    let progress_for_reader = progress.clone();
+
+    let (tx, rx) = mpsc::channel(4);
+    let source = local.source.clone();
+    let reader_task = tokio::spawn(async move {
+        match source {
+            FileSource::Path(path) => {
+                let file = File::open(&path).await?;
+                let mut reader = BufReader::new(file);
+                let mut buffer = vec![0u8; CHUNK_SIZE];
+                loop {
+                    let n = reader.read(&mut buffer).await?;
+                    if n == 0 {
+                        break;
+                    }
+                    if tx.send(buffer[..n].to_vec()).await.is_err() {
+                        break;
+                    }
+                    if let Some(pb) = &progress_for_reader {
+                        pb.inc(n as u64);
+                    }
+                }
+            }
+            FileSource::Memory { data, .. } => {
+                for chunk in data.chunks(CHUNK_SIZE) {
+                    if tx.send(chunk.to_vec()).await.is_err() {
+                        break;
+                    }
+                    if let Some(pb) = &progress_for_reader {
+                        pb.inc(chunk.len() as u64);
+                    }
+                }
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    });
+
+    let upload_result = match client {
+        LsHttpClient::V2(c) => {
+            c.upload(
+                protocol.clone(),
+                ip,
+                port,
+                None,
+                session_id,
+                &local.id,
+                token,
+                rx,
+            )
+            .await
+        }
+        LsHttpClient::V3(_) => unreachable!(),
+    };
+
+    reader_task.await??;
+    if let Some(pb) = progress {
+        pb.finish_and_clear();
+    }
+    upload_result.map_err(|e| anyhow::anyhow!("{e}"))
+}
+
 #[derive(Clone)]
 struct LocalFile {
     id: String,
     file_name: String,
-    path: PathBuf,
+    source: FileSource,
     size: u64,
     file_type: String,
+}
+
+#[derive(Clone)]
+enum FileSource {
+    Path(PathBuf),
+    Memory { data: Vec<u8>, label: String },
+}
+
+impl LocalFile {
+    fn display_source(&self) -> String {
+        match &self.source {
+            FileSource::Path(path) => path.display().to_string(),
+            FileSource::Memory { label, .. } => label.clone(),
+        }
+    }
+
+    fn in_memory_preview(&self) -> Option<String> {
+        match &self.source {
+            FileSource::Memory { data, .. } => text_preview(data),
+            FileSource::Path(_) => None,
+        }
+    }
+}
+
+async fn collect_inputs(
+    paths: &[String],
+    text_stdin: bool,
+    message: Option<&str>,
+    clipboard: bool,
+) -> Result<Vec<LocalFile>> {
+    let text_mode = text_stdin || message.is_some() || clipboard;
+    if text_mode && !paths.is_empty() {
+        bail!("Cannot combine file paths with --text, --message, or --clipboard");
+    }
+
+    let mut files = Vec::new();
+
+    if text_stdin {
+        let data = read_stdin_text().await?;
+        files.push(local_file_from_bytes(data, "stdin")?);
+    } else if let Some(message) = message {
+        let data = read_message_text(message)?;
+        files.push(local_file_from_bytes(data, "inline")?);
+    } else if clipboard {
+        let data = read_clipboard_text()?;
+        files.push(local_file_from_bytes(data, "clipboard")?);
+    } else {
+        files = collect_files(paths).await?;
+    }
+
+    Ok(files)
+}
+
+fn local_file_from_bytes(data: Vec<u8>, label: &str) -> Result<LocalFile> {
+    let size = data.len() as u64;
+    Ok(LocalFile {
+        id: Uuid::new_v4().to_string(),
+        file_name: text_file_name(),
+        source: FileSource::Memory {
+            data,
+            label: label.to_string(),
+        },
+        size,
+        file_type: TEXT_FILE_TYPE.to_string(),
+    })
 }
 
 async fn collect_files(paths: &[String]) -> Result<Vec<LocalFile>> {
@@ -311,8 +394,30 @@ fn local_file_from_path(path: &Path, file_name: &str) -> Result<LocalFile> {
     Ok(LocalFile {
         id: Uuid::new_v4().to_string(),
         file_name: file_name.to_string(),
-        path: path.to_path_buf(),
+        source: FileSource::Path(path.to_path_buf()),
         size: metadata.len(),
         file_type: mime,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn rejects_mixed_paths_and_text_modes() {
+        let result = collect_inputs(&["file.txt".to_string()], true, None, false).await;
+        match result {
+            Err(err) => assert!(err.to_string().contains("Cannot combine")),
+            Ok(_) => panic!("expected error when mixing paths with --text"),
+        }
+    }
+
+    #[test]
+    fn text_file_uses_plain_mime_and_txt_name() {
+        let file = local_file_from_bytes(b"hello".to_vec(), "stdin").unwrap();
+        assert!(file.file_name.ends_with(".txt"));
+        assert_eq!(file.file_type, "text/plain");
+        assert_eq!(file.in_memory_preview().as_deref(), Some("hello"));
+    }
 }

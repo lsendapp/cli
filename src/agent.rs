@@ -80,8 +80,11 @@ fn print_send() {
     println!(
         r#"## send — transfer files to a device
 
-Command:
-  lsend send <TARGET> <FILE...> --json [--pin PIN] [--no-scan]
+ Command:
+  lsend send <TARGET> [FILE...] --json [--pin PIN] [--no-scan]
+  lsend send <TARGET> --text --json [--no-scan]          # stdin pipe
+  lsend send <TARGET> --message "..." --json [--no-scan]
+  lsend send <TARGET> --clipboard --json [--no-scan]
 
 TARGET:
   - IP address (recommended for agents): no network scan, fast
@@ -91,6 +94,11 @@ Recommended agent workflow:
   1. DEVICES=$(lsend scan --json --timeout 5000)
   2. Pick .devices[].ip from JSON
   3. lsend send "$IP" /path/to/file --json --no-scan
+
+Text / automation:
+  echo "hello" | lsend send "$IP" --text --json --no-scan
+  lsend send "$IP" --message "hello" --json --no-scan
+  lsend send "$IP" --clipboard --json --no-scan
 
 Success stdout:
   {{
@@ -110,6 +118,9 @@ resolved_via:
 Flags:
   --no-scan   Fail if TARGET is not an IP (prevents slow implicit scan)
   --pin PIN   Required when the receiver uses LSEND_RECEIVE_PIN
+  --text      Read UTF-8 from stdin (pipe required; do not use on a TTY)
+  --message   Send inline text as a .txt file (text/plain)
+  --clipboard Send plain text from the system clipboard
 "#
     );
 }
@@ -166,7 +177,7 @@ Failure stdout with --json:
 Error codes (code field):
   port_in_use       — bind failed on 53317
   target_not_found  — alias not found (use scan + IP, or drop --no-scan)
-  no_files          — send called with no valid paths
+  no_files          — send called with no paths and no --text/--message/--clipboard
   error             — other failures
 
 Human mode prints "Error: ..." to stderr; JSON mode prints only the envelope to stdout.

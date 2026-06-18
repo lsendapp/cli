@@ -59,6 +59,8 @@ Empty `devices` with `ok: true` is not an error.
 ```bash
 lsend scan --json --timeout 5000
 lsend send 192.168.1.10 ./file.pdf --json --no-scan
+echo "status ok" | lsend send 192.168.1.10 --text --json --no-scan
+lsend send 192.168.1.10 --message "status ok" --json --no-scan
 ```
 
 ```json
