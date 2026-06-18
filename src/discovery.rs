@@ -40,9 +40,18 @@ impl DiscoveredDevice {
 
 pub async fn scan(config: &AppConfig, identity: &Identity, timeout_ms: u64) -> Result<Vec<DiscoveredDevice>> {
     let devices = Arc::new(Mutex::new(HashMap::<String, DiscoveredDevice>::new()));
-    let listener = start_multicast_listener(config, identity, Some(devices.clone())).await?;
+    let multicast_group: Ipv4Addr = DEFAULT_MULTICAST_GROUP.parse()?;
+    let socket = open_multicast_socket(config.port, multicast_group)?;
 
-    send_announcement(config, identity).await?;
+    let listener = start_multicast_listener(
+        config.clone(),
+        identity.clone(),
+        Some(devices.clone()),
+        Arc::clone(&socket),
+    )
+    .await?;
+
+    send_announcement(&socket, config, identity, multicast_group).await?;
 
     sleep(Duration::from_millis(timeout_ms)).await;
 
@@ -52,16 +61,15 @@ pub async fn scan(config: &AppConfig, identity: &Identity, timeout_ms: u64) -> R
     Ok(found.into_values().collect())
 }
 
-pub async fn run_responder(
-    config: AppConfig,
-    identity: Identity,
-) -> Result<impl Drop + use<>> {
-    let _guard = start_multicast_listener(&config, &identity, None).await?;
-    send_announcement(&config, &identity).await?;
-    Ok(_guard)
+pub async fn run_responder(config: AppConfig, identity: Identity) -> Result<MulticastGuard> {
+    let multicast_group: Ipv4Addr = DEFAULT_MULTICAST_GROUP.parse()?;
+    let socket = open_multicast_socket(config.port, multicast_group)?;
+    let guard = start_multicast_listener(config.clone(), identity.clone(), None, Arc::clone(&socket)).await?;
+    send_announcement(&socket, &config, &identity, multicast_group).await?;
+    Ok(guard)
 }
 
-struct MulticastGuard {
+pub struct MulticastGuard {
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -72,17 +80,12 @@ impl Drop for MulticastGuard {
 }
 
 async fn start_multicast_listener(
-    config: &AppConfig,
-    identity: &Identity,
+    config: AppConfig,
+    identity: Identity,
     collect: Option<Arc<Mutex<HashMap<String, DiscoveredDevice>>>>,
+    socket: Arc<UdpSocket>,
 ) -> Result<MulticastGuard> {
-    let config = config.clone();
-    let identity = identity.clone();
     let multicast_group: Ipv4Addr = DEFAULT_MULTICAST_GROUP.parse()?;
-
-    let std_socket = create_multicast_socket(config.port, multicast_group)?;
-    std_socket.set_nonblocking(true)?;
-    let socket = UdpSocket::from_std(std_socket.into())?;
 
     let task = tokio::spawn(async move {
         let mut buf = vec![0u8; 65535];
@@ -106,10 +109,7 @@ async fn start_multicast_listener(
                         if message.announce {
                             let response = build_multicast_message(&config, &identity, false);
                             if let Ok(json) = serde_json::to_vec(&response) {
-                                let dest = SocketAddr::new(
-                                    multicast_group.into(),
-                                    config.port,
-                                );
+                                let dest = SocketAddr::new(multicast_group.into(), config.port);
                                 let _ = socket.send_to(&json, dest).await;
                             }
                         }
@@ -126,24 +126,34 @@ async fn start_multicast_listener(
     Ok(MulticastGuard { task })
 }
 
-async fn send_announcement(config: &AppConfig, identity: &Identity) -> Result<()> {
+async fn send_announcement(
+    socket: &UdpSocket,
+    config: &AppConfig,
+    identity: &Identity,
+    multicast_group: Ipv4Addr,
+) -> Result<()> {
     let message = build_multicast_message(config, identity, true);
     let json = serde_json::to_vec(&message).context("Failed to serialize multicast message")?;
-    let multicast_group: Ipv4Addr = DEFAULT_MULTICAST_GROUP.parse()?;
-
-    let std_socket = create_multicast_socket(config.port, multicast_group)?;
-    std_socket.set_nonblocking(true)?;
-    let socket = UdpSocket::from_std(std_socket.into())?;
-
     let dest = SocketAddr::new(multicast_group.into(), config.port);
+
     for delay_ms in [0u64, 100, 500] {
         if delay_ms > 0 {
             sleep(Duration::from_millis(delay_ms)).await;
         }
-        socket.send_to(&json, dest).await.context("Failed to send announcement")?;
+        socket
+            .send_to(&json, dest)
+            .await
+            .context("Failed to send announcement")?;
     }
 
     Ok(())
+}
+
+fn open_multicast_socket(port: u16, multicast_group: Ipv4Addr) -> Result<Arc<UdpSocket>> {
+    let std_socket = create_multicast_socket(port, multicast_group)?;
+    std_socket.set_nonblocking(true)?;
+    let socket = UdpSocket::from_std(std_socket.into())?;
+    Ok(Arc::new(socket))
 }
 
 fn create_multicast_socket(port: u16, multicast_group: Ipv4Addr) -> Result<Socket> {
@@ -181,7 +191,11 @@ fn message_to_device(message: &MulticastMessageV2, ip: IpAddr, fallback_port: u1
     DiscoveredDevice {
         alias: message.alias.clone(),
         ip: ip.to_string(),
-        port: if message.port == 0 { fallback_port } else { message.port },
+        port: if message.port == 0 {
+            fallback_port
+        } else {
+            message.port
+        },
         fingerprint: message.fingerprint.clone(),
         https: message.protocol == ProtocolTypeV2::Https,
         version: message.version.clone(),
