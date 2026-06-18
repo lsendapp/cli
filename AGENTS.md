@@ -99,3 +99,4 @@ See `lsend agent eval` for a step-by-step smoke test.
 
 - Do not run `receive` while the official app holds port 53317
 - Identity (TLS) stored in `~/.config/lsend/`
+- Device alias persisted in `alias.txt` (official LocalSend word lists + system locale; `--alias` overrides for one run)

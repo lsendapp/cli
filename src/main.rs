@@ -1,4 +1,5 @@
 mod agent;
+mod alias;
 mod cli;
 mod config;
 mod discovery;

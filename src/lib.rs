@@ -1,4 +1,5 @@
 pub(crate) mod agent;
+pub(crate) mod alias;
 pub(crate) mod cli;
 pub(crate) mod config;
 pub(crate) mod discovery;

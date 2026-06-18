@@ -72,10 +72,15 @@ lsend receive --json --once --dir /tmp/inbox
 
 ## Configuration
 
-Identity (TLS certificate and fingerprint) is stored under:
+Identity (TLS certificate and fingerprint) and the device alias are stored under:
 
-- Linux/macOS: `~/.config/lsend/`
+- macOS/Linux: `~/.config/lsend/`
 - Windows: `%APPDATA%\lsend\`
+
+Files:
+
+- `cert.pem`, `key.pem`, `fingerprint.txt` — TLS identity
+- `alias.txt` — persisted device name (generated once from official LocalSend word lists using the system locale; override per run with `--alias`)
 
 ## License
 

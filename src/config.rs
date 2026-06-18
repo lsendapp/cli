@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -26,10 +27,19 @@ impl AppConfig {
             .context("Could not resolve config directory")?
             .join("lsend");
 
+        fs::create_dir_all(&config_dir).with_context(|| {
+            format!("Failed to create config directory {}", config_dir.display())
+        })?;
+
         let receive_dir = receive_dir.unwrap_or_else(default_download_dir);
 
+        let alias = match alias {
+            Some(alias) => alias,
+            None => crate::alias::load_or_create(&config_dir)?,
+        };
+
         Ok(Self {
-            alias: alias.unwrap_or_else(crate::util::generate_random_alias),
+            alias,
             port,
             https,
             multicast_group: DEFAULT_MULTICAST_GROUP.to_string(),
