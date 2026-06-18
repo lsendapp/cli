@@ -28,7 +28,6 @@ use uuid::Uuid;
 use crate::config::AppConfig;
 use crate::identity::Identity;
 use crate::output::{OutputMode, ReceiveEventJson, print_json};
-use crate::text_send::text_file_name;
 
 /// Delay before returning 204 for embedded text messages so the mobile sender
 /// can finish its SendPage transition before reading the response.
@@ -542,51 +541,23 @@ async fn handle_embedded_text_message(
     sender_alias: &str,
     text: &str,
 ) -> Response {
-    let destination_dir = state.config.receive_dir.clone();
-    let desired_name = text_file_name();
-    let target_path = unique_path(&destination_dir, &desired_name);
-
-    if let Err(error) = tokio::fs::create_dir_all(&destination_dir).await {
-        tracing::debug!("Failed to create receive directory: {error}");
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to create receive directory",
-        );
+    let bytes = text.len() as u64;
+    state.notify_human(format!("Message from {sender_alias}: {text}"));
+    if state.output == OutputMode::Json {
+        state.emit_json_event(ReceiveEventJson::MessageReceived {
+            sender_alias: sender_alias.to_string(),
+            text: text.to_string(),
+            size: bytes,
+        });
+        state.emit_json_event(ReceiveEventJson::TransferComplete);
     }
-
-    match tokio::fs::write(&target_path, text.as_bytes()).await {
-        Ok(()) => {
-            let bytes = text.len() as u64;
-            state.notify_human(format!(
-                "Incoming text from {} (saved to {})",
-                sender_alias,
-                target_path.display()
-            ));
-            if state.output == OutputMode::Json {
-                state.emit_json_event(ReceiveEventJson::TransferStarted {
-                    sender_alias: sender_alias.to_string(),
-                    file_count: 1,
-                });
-                state.emit_json_event(ReceiveEventJson::FileSaved {
-                    path: target_path.display().to_string(),
-                    file_name: desired_name,
-                    size: bytes,
-                });
-                state.emit_json_event(ReceiveEventJson::TransferComplete);
-            }
-            tokio::time::sleep(TEXT_MESSAGE_RESPONSE_DELAY).await;
-            if state.stop_after_transfer {
-                if let Some(tx) = &state.stop_tx {
-                    let _ = tx.send(());
-                }
-            }
-            StatusCode::NO_CONTENT.into_response()
-        }
-        Err(error) => {
-            tracing::debug!("Failed to save embedded text message: {error}");
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to save text message")
+    tokio::time::sleep(TEXT_MESSAGE_RESPONSE_DELAY).await;
+    if state.stop_after_transfer {
+        if let Some(tx) = &state.stop_tx {
+            let _ = tx.send(());
         }
     }
+    StatusCode::NO_CONTENT.into_response()
 }
 
 async fn upload_v1_handler(

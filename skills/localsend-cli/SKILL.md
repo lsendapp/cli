@@ -49,7 +49,9 @@ lsend send <IP_FROM_SCAN> --clipboard --json --no-scan
 - Add **`--pin`** if the receiver requires a PIN
 - **`--text`** reads UTF-8 from stdin; **`--message`** sends inline text; **`--clipboard`** sends plain clipboard text
 
-Success JSON includes `"resolved_via": "ip"` and `"files"[].status`.
+Success JSON:
+- File send: `"kind": "file"` and `"files"[].status == "finished"`
+- Message send (`--text` / `--message` / `--clipboard`): `"kind": "message"`, `"text"`, and `"status": "finished"`
 
 ## Receive files (automation)
 

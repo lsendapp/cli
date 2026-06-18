@@ -172,12 +172,26 @@ pub struct SendFileResult {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SendKind {
+    File {
+        files: Vec<SendFileResult>,
+    },
+    Message {
+        text: String,
+        size: u64,
+        status: &'static str,
+    },
+}
+
+#[derive(Debug, Serialize)]
 pub struct SendResult {
     pub command: &'static str,
     pub ok: bool,
     pub target: DeviceJson,
     pub resolved_via: &'static str,
-    pub files: Vec<SendFileResult>,
+    #[serde(flatten)]
+    pub kind: SendKind,
 }
 
 #[derive(Debug, Serialize)]
@@ -192,6 +206,11 @@ pub enum ReceiveEventJson {
     TransferStarted {
         sender_alias: String,
         file_count: usize,
+    },
+    MessageReceived {
+        sender_alias: String,
+        text: String,
+        size: u64,
     },
     FileSaved {
         path: String,
@@ -222,5 +241,77 @@ mod tests {
         let output = OutputOptions::from_cli(false, false);
         std::env::remove_var("LSEND_NO_TUI");
         assert!(output.is_json());
+    }
+
+    #[test]
+    fn message_received_event_serializes_as_snake_case() {
+        let event = ReceiveEventJson::MessageReceived {
+            sender_alias: "iPhone".to_string(),
+            text: "hello".to_string(),
+            size: 5,
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        assert!(json.contains("\"event\":\"message_received\""));
+        assert!(json.contains("\"sender_alias\":\"iPhone\""));
+        assert!(json.contains("\"text\":\"hello\""));
+    }
+
+    #[test]
+    fn send_file_result_serializes_with_kind_file() {
+        let result = SendResult {
+            command: "send",
+            ok: true,
+            target: DeviceJson {
+                alias: "Peer".to_string(),
+                ip: "192.168.1.10".to_string(),
+                port: 53317,
+                fingerprint: String::new(),
+                https: true,
+                version: "2.1".to_string(),
+                device_type: None,
+                device_model: None,
+            },
+            resolved_via: "ip",
+            kind: SendKind::File {
+                files: vec![SendFileResult {
+                    name: "file.pdf".to_string(),
+                    path: "/tmp/file.pdf".to_string(),
+                    size: 1024,
+                    status: "finished",
+                }],
+            },
+        };
+        let json = serde_json::to_string(&result).expect("serialize");
+        assert!(json.contains("\"kind\":\"file\""));
+        assert!(json.contains("\"status\":\"finished\""));
+        assert!(!json.contains("\"kind\":\"message\""));
+    }
+
+    #[test]
+    fn send_message_result_serializes_with_kind_message() {
+        let result = SendResult {
+            command: "send",
+            ok: true,
+            target: DeviceJson {
+                alias: "Peer".to_string(),
+                ip: "192.168.1.10".to_string(),
+                port: 53317,
+                fingerprint: String::new(),
+                https: true,
+                version: "2.1".to_string(),
+                device_type: None,
+                device_model: None,
+            },
+            resolved_via: "ip",
+            kind: SendKind::Message {
+                text: "hello".to_string(),
+                size: 5,
+                status: "finished",
+            },
+        };
+        let json = serde_json::to_string(&result).expect("serialize");
+        assert!(json.contains("\"kind\":\"message\""));
+        assert!(json.contains("\"text\":\"hello\""));
+        assert!(!json.contains("\"files\""));
     }
 }

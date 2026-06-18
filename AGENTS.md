@@ -100,9 +100,27 @@ lsend send 192.168.1.10 --message "status ok" --json --no-scan
   "ok": true,
   "target": { "ip": "192.168.1.10", ... },
   "resolved_via": "ip",
-  "files": [{ "name": "file.pdf", "path": "/abs/file.pdf", "size": 1024, "status": "sent" }]
+  "kind": "file",
+  "files": [{ "name": "file.pdf", "path": "/abs/file.pdf", "size": 1024, "status": "finished" }]
 }
 ```
+
+Message send (`--text`, `--message`, `--clipboard`):
+
+```json
+{
+  "command": "send",
+  "ok": true,
+  "target": { "ip": "192.168.1.10", ... },
+  "resolved_via": "ip",
+  "kind": "message",
+  "text": "status ok",
+  "size": 9,
+  "status": "finished"
+}
+```
+
+`kind`: `"file"` for path-based transfers, `"message"` for text modes.
 
 `resolved_via`: `"ip"` (preferred) or `"scan"` (alias triggered discovery).
 

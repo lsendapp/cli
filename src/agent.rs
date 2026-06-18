@@ -146,16 +146,33 @@ Text / automation:
   lsend send "$IP" --message "hello" --json --no-scan
   lsend send "$IP" --clipboard --json --no-scan
 
-Success stdout:
+Success stdout (file):
   {{
     "command": "send",
     "ok": true,
     "target": {{ "alias": "...", "ip": "...", "port": 53317, ... }},
     "resolved_via": "ip",
+    "kind": "file",
     "files": [
-      {{ "name": "file.pdf", "path": "/abs/file.pdf", "size": 1024, "status": "sent" }}
+      {{ "name": "file.pdf", "path": "/abs/file.pdf", "size": 1024, "status": "finished" }}
     ]
   }}
+
+Success stdout (message via --text / --message / --clipboard):
+  {{
+    "command": "send",
+    "ok": true,
+    "target": {{ "alias": "...", "ip": "...", "port": 53317, ... }},
+    "resolved_via": "ip",
+    "kind": "message",
+    "text": "hello",
+    "size": 5,
+    "status": "finished"
+  }}
+
+kind:
+  - "file"    — path-based file transfer
+  - "message" — text modes; successful delivery uses status "finished"
 
 resolved_via:
   - "ip"    — target was an IP address (preferred)
@@ -251,7 +268,7 @@ Run these in order from the built binary (adjust paths as needed):
 
 3. Send (requires a reachable peer IP from step 2)
    lsend send <IP> ./README.md --json --no-scan
-   Expect: ok=true, files[].status == "sent"
+   Expect: ok=true, kind=="file", files[].status == "finished"
 
 4. Receive (stop the official app on this machine first)
    lsend receive --json --once --dir /tmp/lsend-inbox

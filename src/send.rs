@@ -17,7 +17,7 @@ use crate::discovery::resolve_target;
 use crate::error::CliError;
 use crate::identity::Identity;
 use crate::network::build_http_client;
-use crate::output::{DeviceJson, OutputOptions, SendFileResult, SendResult, print_json};
+use crate::output::{DeviceJson, OutputOptions, SendFileResult, SendKind, SendResult, print_json};
 use crate::text_send::{
     TEXT_FILE_TYPE, read_clipboard_text, read_message_text, read_stdin_text, text_file_name,
     text_preview,
@@ -38,6 +38,7 @@ pub async fn send_files(
     output: OutputOptions,
 ) -> Result<()> {
     let (device, resolved_via) = resolve_target(target, config, identity, !no_scan).await?;
+    let is_message = is_message_send(text_stdin, message.is_some(), clipboard);
     let files = collect_inputs(paths, text_stdin, message, clipboard).await?;
     if files.is_empty() {
         return Err(CliError::NoFiles.into());
@@ -122,23 +123,16 @@ pub async fn send_files(
 
     if prepare_result.status_code == 204 {
         if output.show_human_progress() {
-            println!("Receiver accepted with no file transfer needed.");
+            println!("Message delivered.");
         } else if output.is_json() {
-            print_json(&SendResult {
-                command: "send",
-                ok: true,
-                target: DeviceJson::from(&device),
+            print_json(&build_send_result(
+                &device,
                 resolved_via,
-                files: files
-                    .iter()
-                    .map(|local| SendFileResult {
-                        name: local.file_name.clone(),
-                        path: local.display_source(),
-                        size: local.size,
-                        status: "skipped",
-                    })
-                    .collect(),
-            });
+                is_message,
+                &files,
+                vec![],
+                "finished",
+            ));
         }
         return Ok(());
     }
@@ -178,18 +172,24 @@ pub async fn send_files(
             name: local.file_name.clone(),
             path: local.display_source(),
             size: local.size,
-            status: "sent",
+            status: "finished",
         });
     }
 
     if output.is_json() {
-        print_json(&SendResult {
-            command: "send",
-            ok: true,
-            target: DeviceJson::from(&device),
+        let message_status = if results.iter().all(|result| result.status == "finished") {
+            "finished"
+        } else {
+            "skipped"
+        };
+        print_json(&build_send_result(
+            &device,
             resolved_via,
-            files: results,
-        });
+            is_message,
+            &files,
+            results,
+            message_status,
+        ));
     } else if output.show_human_progress() {
         println!("Done.");
     }
@@ -306,6 +306,46 @@ impl LocalFile {
             FileSource::Memory { data, .. } => text_preview(data),
             FileSource::Path(_) => None,
         }
+    }
+
+    fn message_text(&self) -> String {
+        self.in_memory_preview().unwrap_or_default()
+    }
+}
+
+fn is_message_send(text_stdin: bool, has_message: bool, clipboard: bool) -> bool {
+    text_stdin || has_message || clipboard
+}
+
+fn build_send_result(
+    device: &crate::discovery::DiscoveredDevice,
+    resolved_via: &'static str,
+    is_message: bool,
+    locals: &[LocalFile],
+    file_results: Vec<SendFileResult>,
+    message_status: &'static str,
+) -> SendResult {
+    let kind = if is_message {
+        let local = locals
+            .first()
+            .expect("message send must include exactly one in-memory payload");
+        SendKind::Message {
+            text: local.message_text(),
+            size: local.size,
+            status: message_status,
+        }
+    } else {
+        SendKind::File {
+            files: file_results,
+        }
+    };
+
+    SendResult {
+        command: "send",
+        ok: true,
+        target: DeviceJson::from(device),
+        resolved_via,
+        kind,
     }
 }
 
