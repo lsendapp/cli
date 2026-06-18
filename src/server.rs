@@ -20,16 +20,20 @@ use localsend::http::dto_v2::{
 use localsend::model::transfer::FileDto;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
 
 use crate::config::AppConfig;
 use crate::identity::Identity;
+use crate::output::{OutputMode, ReceiveEventJson, print_json};
 
 #[derive(Clone)]
 pub struct ServerState {
     pub config: AppConfig,
     pub identity: Identity,
+    output: OutputMode,
+    stop_after_transfer: bool,
+    stop_tx: Option<mpsc::UnboundedSender<()>>,
     inner: Arc<Mutex<InnerState>>,
 }
 
@@ -59,11 +63,32 @@ struct ReceivingFileEntry {
 }
 
 impl ServerState {
-    pub fn new(config: AppConfig, identity: Identity) -> Self {
+    pub fn new(
+        config: AppConfig,
+        identity: Identity,
+        output: OutputMode,
+        stop_after_transfer: bool,
+        stop_tx: Option<mpsc::UnboundedSender<()>>,
+    ) -> Self {
         Self {
             config,
             identity,
+            output,
+            stop_after_transfer,
+            stop_tx,
             inner: Arc::new(Mutex::new(InnerState { session: None })),
+        }
+    }
+
+    fn notify_human(&self, message: impl AsRef<str>) {
+        if self.output == OutputMode::Human {
+            println!("{}", message.as_ref());
+        }
+    }
+
+    fn emit_json_event(&self, event: ReceiveEventJson) {
+        if self.output == OutputMode::Json {
+            print_json(&event);
         }
     }
 }
@@ -165,11 +190,17 @@ async fn prepare_upload_handler(
         );
     }
 
-    println!(
+    state.notify_human(format!(
         "Incoming transfer from {} ({} file(s))",
         dto.info.alias,
         session_files.len()
-    );
+    ));
+    if state.output == OutputMode::Json {
+        state.emit_json_event(ReceiveEventJson::TransferStarted {
+            sender_alias: dto.info.alias,
+            file_count: session_files.len(),
+        });
+    }
 
     guard.session = Some(ReceiveSession {
         session_id: session_id.clone(),
@@ -255,7 +286,18 @@ async fn upload_handler(
     match save_result {
         Ok(bytes) => {
             entry.path = Some(target_path.clone());
-            println!("Saved {} ({} bytes)", target_path.display(), bytes);
+            state.notify_human(format!(
+                "Saved {} ({} bytes)",
+                target_path.display(),
+                bytes
+            ));
+            if state.output == OutputMode::Json {
+                state.emit_json_event(ReceiveEventJson::FileSaved {
+                    path: target_path.display().to_string(),
+                    file_name: desired_name,
+                    size: bytes,
+                });
+            }
         }
         Err(e) => {
             return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
@@ -264,8 +306,16 @@ async fn upload_handler(
 
     if session.files.values().all(|f| f.path.is_some()) {
         session.status = SessionStatus::Finished;
-        println!("Transfer complete.");
+        state.notify_human("Transfer complete.");
+        if state.output == OutputMode::Json {
+            state.emit_json_event(ReceiveEventJson::TransferComplete);
+        }
         guard.session = None;
+        if state.stop_after_transfer {
+            if let Some(tx) = &state.stop_tx {
+                let _ = tx.send(());
+            }
+        }
     }
 
     StatusCode::OK.into_response()
@@ -276,7 +326,10 @@ async fn cancel_handler(State(state): State<ServerState>, Query(params): Query<H
     let mut guard = state.inner.lock().await;
     if let Some(session) = &guard.session {
         if requested.as_ref() == Some(&session.session_id) || requested.is_none() {
-            println!("Transfer cancelled by sender.");
+            state.notify_human("Transfer cancelled by sender.");
+            if state.output == OutputMode::Json {
+                state.emit_json_event(ReceiveEventJson::TransferCancelled);
+            }
             guard.session = None;
         }
     }

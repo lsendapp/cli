@@ -14,7 +14,10 @@ use uuid::Uuid;
 
 use crate::config::AppConfig;
 use crate::discovery::resolve_target;
+use crate::error::CliError;
 use crate::identity::Identity;
+use crate::network::build_http_client;
+use crate::output::{DeviceJson, OutputOptions, SendFileResult, SendResult, print_json};
 
 const CHUNK_SIZE: usize = 512 * 1024;
 
@@ -24,11 +27,13 @@ pub async fn send_files(
     target: &str,
     paths: &[String],
     pin: Option<&str>,
+    no_scan: bool,
+    output: OutputOptions,
 ) -> Result<()> {
-    let device = resolve_target(target, config, identity).await?;
+    let (device, resolved_via) = resolve_target(target, config, identity, !no_scan).await?;
     let files = collect_files(paths).await?;
     if files.is_empty() {
-        bail!("No files to send");
+        return Err(CliError::NoFiles.into());
     }
 
     let client = build_http_client(identity, config.https)?;
@@ -76,12 +81,14 @@ pub async fn send_files(
         files: file_map,
     };
 
-    println!(
-        "Sending {} file(s) to {} ({})",
-        files.len(),
-        device.alias,
-        device.ip
-    );
+    if output.show_human_progress() {
+        println!(
+            "Sending {} file(s) to {} ({})",
+            files.len(),
+            device.alias,
+            device.ip
+        );
+    }
 
     let prepare_result = match &client {
         LsHttpClient::V2(c) => {
@@ -98,8 +105,28 @@ pub async fn send_files(
         LsHttpClient::V3(_) => bail!("v3 client is not supported by this CLI"),
     };
 
+    let mut results = Vec::with_capacity(files.len());
+
     if prepare_result.status_code == 204 {
-        println!("Receiver accepted with no file transfer needed.");
+        if output.show_human_progress() {
+            println!("Receiver accepted with no file transfer needed.");
+        } else if output.is_json() {
+            print_json(&SendResult {
+                command: "send",
+                ok: true,
+                target: DeviceJson::from(&device),
+                resolved_via,
+                files: files
+                    .iter()
+                    .map(|local| SendFileResult {
+                        name: local.file_name.clone(),
+                        path: local.path.display().to_string(),
+                        size: local.size,
+                        status: "skipped",
+                    })
+                    .collect(),
+            });
+        }
         return Ok(());
     }
 
@@ -109,61 +136,127 @@ pub async fn send_files(
 
     for local in &files {
         let Some(token) = response.files.get(&local.id) else {
-            println!("Skipped (not accepted): {}", local.file_name);
+            if output.show_human_progress() {
+                println!("Skipped (not accepted): {}", local.file_name);
+            }
+            results.push(SendFileResult {
+                name: local.file_name.clone(),
+                path: local.path.display().to_string(),
+                size: local.size,
+                status: "skipped",
+            });
             continue;
         };
 
-        let pb = ProgressBar::new(local.size);
-        pb.set_style(
-            ProgressStyle::with_template("{msg} [{bar:40.cyan/blue}] {bytes}/{total_bytes}")
-                .unwrap()
-                .progress_chars("=>-"),
-        );
-        pb.set_message(local.file_name.clone());
-        let pb_reader = pb.clone();
+        if output.show_human_progress() {
+            let pb = ProgressBar::new(local.size);
+            pb.set_style(
+                ProgressStyle::with_template("{msg} [{bar:40.cyan/blue}] {bytes}/{total_bytes}")
+                    .unwrap()
+                    .progress_chars("=>-"),
+            );
+            pb.set_message(local.file_name.clone());
+            let pb_reader = pb.clone();
 
-        let (tx, rx) = mpsc::channel(4);
-        let path = local.path.clone();
-        let reader_task = tokio::spawn(async move {
-            let file = File::open(&path).await?;
-            let mut reader = BufReader::new(file);
-            let mut buffer = vec![0u8; CHUNK_SIZE];
-            loop {
-                let n = reader.read(&mut buffer).await?;
-                if n == 0 {
-                    break;
+            let (tx, rx) = mpsc::channel(4);
+            let path = local.path.clone();
+            let reader_task = tokio::spawn(async move {
+                let file = File::open(&path).await?;
+                let mut reader = BufReader::new(file);
+                let mut buffer = vec![0u8; CHUNK_SIZE];
+                loop {
+                    let n = reader.read(&mut buffer).await?;
+                    if n == 0 {
+                        break;
+                    }
+                    if tx.send(buffer[..n].to_vec()).await.is_err() {
+                        break;
+                    }
+                    pb_reader.inc(n as u64);
                 }
-                if tx.send(buffer[..n].to_vec()).await.is_err() {
-                    break;
+                Ok::<(), anyhow::Error>(())
+            });
+
+            let upload_result = match &client {
+                LsHttpClient::V2(c) => {
+                    c.upload(
+                        protocol.clone(),
+                        &device.ip,
+                        device.port,
+                        None,
+                        &response.session_id,
+                        &local.id,
+                        token,
+                        rx,
+                    )
+                    .await
                 }
-                pb_reader.inc(n as u64);
-            }
-            Ok::<(), anyhow::Error>(())
+                LsHttpClient::V3(_) => unreachable!(),
+            };
+
+            reader_task.await??;
+            pb.finish_and_clear();
+            upload_result.map_err(|e| anyhow::anyhow!("Upload failed for {}: {e}", local.file_name))?;
+        } else {
+            let (tx, rx) = mpsc::channel(4);
+            let path = local.path.clone();
+            let reader_task = tokio::spawn(async move {
+                let file = File::open(&path).await?;
+                let mut reader = BufReader::new(file);
+                let mut buffer = vec![0u8; CHUNK_SIZE];
+                loop {
+                    let n = reader.read(&mut buffer).await?;
+                    if n == 0 {
+                        break;
+                    }
+                    if tx.send(buffer[..n].to_vec()).await.is_err() {
+                        break;
+                    }
+                }
+                Ok::<(), anyhow::Error>(())
+            });
+
+            let upload_result = match &client {
+                LsHttpClient::V2(c) => {
+                    c.upload(
+                        protocol.clone(),
+                        &device.ip,
+                        device.port,
+                        None,
+                        &response.session_id,
+                        &local.id,
+                        token,
+                        rx,
+                    )
+                    .await
+                }
+                LsHttpClient::V3(_) => unreachable!(),
+            };
+
+            reader_task.await??;
+            upload_result.map_err(|e| anyhow::anyhow!("Upload failed for {}: {e}", local.file_name))?;
+        }
+
+        results.push(SendFileResult {
+            name: local.file_name.clone(),
+            path: local.path.display().to_string(),
+            size: local.size,
+            status: "sent",
         });
-
-        let upload_result = match &client {
-            LsHttpClient::V2(c) => {
-                c.upload(
-                    protocol.clone(),
-                    &device.ip,
-                    device.port,
-                    None,
-                    &response.session_id,
-                    &local.id,
-                    token,
-                    rx,
-                )
-                .await
-            }
-            LsHttpClient::V3(_) => unreachable!(),
-        };
-
-        reader_task.await??;
-        pb.finish_and_clear();
-        upload_result.map_err(|e| anyhow::anyhow!("Upload failed for {}: {e}", local.file_name))?;
     }
 
-    println!("Done.");
+    if output.is_json() {
+        print_json(&SendResult {
+            command: "send",
+            ok: true,
+            target: DeviceJson::from(&device),
+            resolved_via,
+            files: results,
+        });
+    } else if output.show_human_progress() {
+        println!("Done.");
+    }
+
     Ok(())
 }
 
@@ -223,5 +316,3 @@ fn local_file_from_path(path: &Path, file_name: &str) -> Result<LocalFile> {
         file_type: mime,
     })
 }
-
-use crate::network::build_http_client;

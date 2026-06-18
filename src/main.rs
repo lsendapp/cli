@@ -1,9 +1,12 @@
+mod agent;
 mod cli;
 mod config;
 mod discovery;
+mod error;
 mod identity;
 mod legacy;
 mod network;
+mod output;
 mod receive;
 mod scan_server;
 mod send;
@@ -16,11 +19,27 @@ use tracing_subscriber::EnvFilter;
 
 use crate::cli::{Cli, Commands};
 use crate::config::AppConfig;
+use crate::error::CliError;
 use crate::identity::Identity;
+use crate::output::{DeviceJson, OutputOptions, ScanResult, error_envelope, print_json};
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(code) = run().await {
+        std::process::exit(code);
+    }
+}
+
+async fn run() -> Result<(), i32> {
     let cli = Cli::parse();
+    let output = OutputOptions::new(cli.json, cli.quiet);
+
+    if matches!(cli.command, Commands::Agent { .. }) {
+        if let Commands::Agent { topic } = cli.command {
+            agent::print(topic);
+        }
+        return Ok(());
+    }
 
     let default_level = if cli.verbose {
         "lsend=info"
@@ -29,38 +48,89 @@ async fn main() -> Result<()> {
     };
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
     tracing_subscriber::fmt().with_env_filter(filter).init();
+
     let https = !cli.http;
-    let config = AppConfig::new(cli.alias, cli.port, https, None)?;
-    let identity = Identity::load_or_create(&config.config_dir, https)?;
+    let config =
+        AppConfig::new(cli.alias, cli.port, https, None).map_err(|e| fail("lsend", output, e))?;
+    let identity =
+        Identity::load_or_create(&config.config_dir, https).map_err(|e| fail("lsend", output, e))?;
 
     match cli.command {
-        Commands::Scan { timeout } => cmd_scan(&config, &identity, timeout).await?,
-        Commands::Send { target, paths, pin } => {
-            send::send_files(&config, &identity, &target, &paths, pin.as_deref()).await?
-        }
-        Commands::Receive { dir } => {
+        Commands::Agent { .. } => unreachable!(),
+        Commands::Scan { timeout } => cmd_scan(&config, &identity, timeout, output)
+            .await
+            .map_err(|e| fail("scan", output, e))?,
+        Commands::Send {
+            target,
+            paths,
+            pin,
+            no_scan,
+        } => send::send_files(
+            &config,
+            &identity,
+            &target,
+            &paths,
+            pin.as_deref(),
+            no_scan,
+            output,
+        )
+        .await
+        .map_err(|e| fail("send", output, e))?,
+        Commands::Receive { dir, once } => {
             let mut config = config;
             if let Some(dir) = dir {
                 config.receive_dir = dir.into();
             }
-            receive::run(config, identity).await?
+            receive::run(config, identity, output, once)
+                .await
+                .map_err(|e| fail("receive", output, e))?;
         }
     }
 
     Ok(())
 }
 
-async fn cmd_scan(config: &AppConfig, identity: &Identity, timeout_ms: u64) -> Result<()> {
-    println!("Scanning for Lsend devices ({timeout_ms} ms)...");
-    let devices = discovery::scan(config, identity, timeout_ms).await?;
+fn fail(command: &'static str, output: OutputOptions, error: impl Into<anyhow::Error>) -> i32 {
+    let cli_error = CliError::from_anyhow(error.into());
+    let code = cli_error.exit_code();
+    match output.is_json() {
+        true => print_json(&error_envelope(command, &cli_error)),
+        false => eprintln!("Error: {cli_error}"),
+    }
+    code
+}
 
-    if devices.is_empty() {
-        println!("No devices found.");
-        return Ok(());
+async fn cmd_scan(
+    config: &AppConfig,
+    identity: &Identity,
+    timeout_ms: u64,
+    output: OutputOptions,
+) -> Result<()> {
+    if output.show_human_progress() {
+        println!("Scanning for Lsend devices ({timeout_ms} ms)...");
     }
 
-    for device in devices {
-        println!("  {}", device.display_label());
+    let devices = discovery::scan(config, identity, timeout_ms).await?;
+
+    if output.is_json() {
+        print_json(&ScanResult {
+            command: "scan",
+            ok: true,
+            timeout_ms,
+            devices: devices.iter().map(DeviceJson::from).collect(),
+        });
+    } else if output.show_human_progress() {
+        if devices.is_empty() {
+            println!("No devices found.");
+        } else {
+            for device in devices {
+                println!("  {}", device.display_label());
+            }
+        }
+    } else {
+        for device in devices {
+            println!("{}", device.display_label());
+        }
     }
 
     Ok(())

@@ -43,7 +43,9 @@ lsend send 192.168.1.42 ./photo.png ./notes.txt
 | `--http` | Use plain HTTP instead of HTTPS |
 | `--port PORT` | Listen/connect port (default: 53317) |
 | `--alias NAME` | Device display name |
-| `-v, --verbose` | Print diagnostic logs during scan/send/receive |
+| `-v, --verbose` | Print diagnostic logs on stderr |
+| `--json` | Machine-readable JSON on stdout (see [AGENTS.md](AGENTS.md)) |
+| `-q, --quiet` | Suppress progress text (human mode; implied by `--json`) |
 
 ### Per-subcommand options
 
@@ -51,7 +53,22 @@ lsend send 192.168.1.42 ./photo.png ./notes.txt
 |------------|------|-------------|
 | `scan` | `--timeout MS` | How long to wait for responses, in milliseconds (default: 1500) |
 | `send` | `--pin PIN` | PIN when sending to a PIN-protected receiver |
+| `send` | `--no-scan` | Do not scan for alias; use IP or fail fast |
 | `receive` | `--dir PATH` | Directory where received files are saved (default: Downloads) |
+| `receive` | `--once` | Exit after the first completed transfer |
+
+## AI agents and automation
+
+- **`lsend agent`** — offline progressive docs (`scan`, `send`, `receive`, `errors`, `eval`)
+- **[AGENTS.md](AGENTS.md)** — JSON schemas and exit codes
+- **`skills/localsend-cli/SKILL.md`** — Cursor agent skill (copy to `.cursor/skills/`)
+
+```bash
+lsend agent
+lsend scan --json --timeout 5000
+lsend send 192.168.1.42 ./file.pdf --json --no-scan
+lsend receive --json --once --dir /tmp/inbox
+```
 
 ## Configuration
 

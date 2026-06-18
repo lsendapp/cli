@@ -53,12 +53,12 @@ pub async fn scan(config: &AppConfig, identity: &Identity, timeout_ms: u64) -> R
     let discovery_server = match start_discovery_server(config.clone(), identity.clone(), devices.clone()).await {
         Ok(handle) => Some(handle),
         Err(e) => {
-            warn!(
-                "Could not start discovery HTTP server on port {}: {e}. \
-                 Close the official LocalSend app if it is running, or use another --port. \
-                 Peers may only respond via UDP.",
-                config.port
-            );
+                warn!(
+                    "Could not start discovery HTTP server on port {}: {e}. \
+                     Close the official app if it is running, or use another --port. \
+                     Peers may only respond via UDP.",
+                    config.port
+                );
             None
         }
     };
@@ -374,25 +374,40 @@ pub async fn resolve_target(
     target: &str,
     config: &AppConfig,
     identity: &Identity,
-) -> Result<DiscoveredDevice> {
+    allow_scan: bool,
+) -> Result<(DiscoveredDevice, &'static str)> {
     if looks_like_ip(target) {
-        return Ok(DiscoveredDevice {
-            alias: target.to_string(),
-            ip: target.to_string(),
-            port: config.port,
-            fingerprint: String::new(),
-            https: config.https,
-            version: crate::config::PROTOCOL_VERSION.to_string(),
-            device_type: None,
-            device_model: None,
-        });
+        return Ok((
+            DiscoveredDevice {
+                alias: target.to_string(),
+                ip: target.to_string(),
+                port: config.port,
+                fingerprint: String::new(),
+                https: config.https,
+                version: crate::config::PROTOCOL_VERSION.to_string(),
+                device_type: None,
+                device_model: None,
+            },
+            "ip",
+        ));
+    }
+
+    if !allow_scan {
+        return Err(crate::error::CliError::TargetNotFound {
+            target: target.to_string(),
+        }
+        .into());
     }
 
     let devices = scan(config, identity, AppConfig::DEFAULT_DISCOVERY_TIMEOUT_MS * 4).await?;
-    devices
+    let device = devices
         .into_iter()
         .find(|d| d.alias.eq_ignore_ascii_case(target))
-        .with_context(|| format!("No device found with alias \"{target}\""))
+        .ok_or_else(|| crate::error::CliError::TargetNotFound {
+            target: target.to_string(),
+        })?;
+
+    Ok((device, "scan"))
 }
 
 fn looks_like_ip(value: &str) -> bool {
