@@ -31,9 +31,9 @@ impl CliError {
     pub fn hint(&self) -> Option<String> {
         match self {
             Self::PortInUse { port } => Some(format!(
-                "Close the official app or stop another `lsend receive`. \
+                "Close any other process holding port {port} (e.g. the LocalSend app, another `lsend receive`). \
                  Reuse an existing receiver when possible. \
-                 Avoid alternate `--port`: discovery uses the same UDP/TCP port, so the official app and default `scan` (port {}) will not see this device.",
+                 Avoid alternate `--port`: discovery uses the same UDP/TCP port, so the LocalSend app and default `scan` (port {}) will not see this device.",
                 port
             )),
             Self::TargetNotFound { .. } => Some(
@@ -100,7 +100,7 @@ impl fmt::Display for CliError {
         match self {
             Self::PortInUse { port } => write!(
                 f,
-                "Port {port} is already in use. Close the official app or stop another lsend receive."
+                "Port {port} is already in use. Close any other process holding port {port} (e.g. the LocalSend app, another `lsend receive`)."
             ),
             Self::TargetNotFound { target } => write!(
                 f,

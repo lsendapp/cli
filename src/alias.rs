@@ -85,7 +85,7 @@ pub fn save(config_dir: &Path, alias: &str) -> Result<()> {
     Ok(())
 }
 
-/// Load persisted alias or generate one using the system locale (official app behavior).
+/// Load persisted alias or generate one using the system locale (matches the LocalSend app).
 pub fn load_or_create(config_dir: &Path) -> Result<String> {
     if let Some(alias) = read_persisted(config_dir)? {
         return Ok(alias);

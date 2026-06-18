@@ -9,7 +9,7 @@ Machine-readable, non-interactive CLI for the LocalSend protocol.
 ## Principles
 
 - No prompts — all inputs via flags
-- **`--json`** — structured stdout only (no human text); also enabled when stdout is piped or `LOCALSEND_NO_TUI=1`
+- **`--json`** — structured stdout only (no human text); also enabled when stdout is piped or `LSEND_NO_TUI=1`
 - **`--quiet`** — minimal stdout in human mode (`--json` implies quiet)
 - Logs on **stderr** via `-v` / `RUST_LOG`
 - Stable **exit codes** + **`code`** field in error JSON
@@ -20,10 +20,10 @@ Machine-readable, non-interactive CLI for the LocalSend protocol.
 |------|-------------|
 | `--json` | JSON stdout (`scan`/`send` object, `receive` NDJSON); auto-enabled when piped |
 | `--quiet` / `-q` | Suppress progress text (human mode) |
-| `LOCALSEND_NO_TUI=1` | Same as `--json` for non-interactive stdout |
+| `LSEND_NO_TUI=1` | Same as `--json` for non-interactive stdout |
 | `-v, --verbose` | Diagnostics on stderr |
 | `--http` | Plain HTTP (default: HTTPS) |
-| `--port PORT` | Default `53317`. **Keep 53317 for receive** — alternate ports break multicast discovery (official app and default `scan` will not see this device). |
+| `--port PORT` | Default `53317`. **Keep 53317 for receive** — alternate ports break multicast discovery (the LocalSend app and default `scan` will not see this device). |
 | `--alias NAME` | Override persisted alias for one command only |
 
 ## Exit codes
@@ -54,7 +54,7 @@ Empty `devices` with `ok: true` is not an error.
 
 ## alias
 
-Manage the persisted device alias (official UI: **Device name**). Stored in `~/.config/lsend/alias.txt`.
+Manage the persisted device alias (the LocalSend app UI: **Device name**). Stored in `~/.config/lsend/alias.txt`.
 
 ```bash
 lsend alias show --json
@@ -153,9 +153,9 @@ See `lsend agent eval` for a step-by-step smoke test.
 
 ## Notes
 
-- Do not run `receive` while the official app holds port 53317
-- **Do not use alternate `--port` for receive** unless you accept that other devices cannot discover this CLI via scan. LocalSend multicast discovery binds UDP and TCP to the same port; the official app and default `scan` listen on 53317 only.
-- On `port_in_use`, prefer closing the official app or reusing an existing receiver — do not auto-kill processes or silently switch ports
+- Do not run `receive` while another process holds port 53317 (e.g. the LocalSend app or another `lsend receive`)
+- **Do not use alternate `--port` for receive** unless you accept that other devices cannot discover this CLI via scan. LocalSend multicast discovery binds UDP and TCP to the same port; the LocalSend app and default `scan` listen on 53317 only.
+- On `port_in_use`, prefer closing whatever holds port 53317 (e.g. the LocalSend app, another `lsend receive`) or reusing an existing receiver — do not auto-kill processes or silently switch ports
 - Identity (TLS) stored in `~/.config/lsend/`
 - Device alias persisted in `alias.txt`; manage with `lsend alias`; `--alias` overrides for one run
 - Receive PIN via `receive --pin` (persisted in `receive_pin`) or `LSEND_RECEIVE_PIN`

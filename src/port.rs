@@ -5,7 +5,7 @@ use tokio::net::TcpListener;
 
 use crate::error::CliError;
 
-/// Fail fast when the TCP port is already bound (e.g. official LocalSend app running).
+/// Fail fast when the TCP port is already bound (e.g. the LocalSend app or another `lsend receive`).
 pub async fn ensure_available(port: u16) -> Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     match TcpListener::bind(addr).await {

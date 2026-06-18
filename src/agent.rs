@@ -211,9 +211,9 @@ PIN priority: --pin (saved to receive_pin) > config file > LSEND_RECEIVE_PIN env
 
 Important:
   - Port is checked before bind; port_in_use errors include a hint with remediation.
-  - Close the official app before receive (port 53317 conflict).
-  - Do not use alternate --port for receive: discovery uses the same UDP/TCP port, so the official LocalSend app and default scan (53317) will not see this device.
-  - On port_in_use: close the official app or reuse an existing receiver; do not auto-kill processes or silently switch ports.
+  - Close any other process holding port 53317 (e.g. the LocalSend app, another lsend receive) before receive.
+  - Do not use alternate --port for receive: discovery uses the same UDP/TCP port, so the LocalSend app and default scan (53317) will not see this device.
+  - On port_in_use: close any other process holding port 53317 (e.g. the LocalSend app, another lsend receive) or reuse an existing receiver; do not auto-kill processes or silently switch ports.
   - Without --once the process runs until Ctrl+C (avoid for agents).
   - JSON mode is auto-enabled when stdout is piped or LSEND_NO_TUI=1.
 "#
@@ -228,7 +228,7 @@ Exit codes:
   0  success
   1  general error
   2  not found (unknown alias, no files, etc.)
-  3  port already in use (official app or another lsend instance)
+  3  port already in use (LocalSend app or another lsend instance)
 
 Failure stdout with --json:
   {{
@@ -262,7 +262,7 @@ Run these in order from the built binary (adjust paths as needed):
    lsend agent alias
    lsend agent scan
 
-2. Discovery (requires a peer running the official app on the LAN)
+2. Discovery (requires a peer running the LocalSend app on the LAN)
    lsend scan --json --timeout 5000
    Expect: ok=true and devices[] (may be empty if no peers)
 
@@ -270,7 +270,7 @@ Run these in order from the built binary (adjust paths as needed):
    lsend send <IP> ./README.md --json --no-scan
    Expect: ok=true, kind=="file", files[].status == "finished"
 
-4. Receive (stop the official app on this machine first)
+4. Receive (stop the LocalSend app or another lsend receive on this machine first)
    lsend receive --json --once --dir /tmp/lsend-inbox
    Expect NDJSON: ready -> ... -> shutdown after a peer sends a file
 

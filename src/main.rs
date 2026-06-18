@@ -130,7 +130,7 @@ async fn cmd_scan(
     output: OutputOptions,
 ) -> Result<()> {
     if output.show_human_progress() {
-        println!("Scanning for Lsend devices ({timeout_ms} ms)...");
+        println!("Scanning for LocalSend devices ({timeout_ms} ms)...");
     }
 
     let devices = discovery::scan(config, identity, timeout_ms).await?;

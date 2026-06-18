@@ -56,9 +56,9 @@ pub async fn scan(config: &AppConfig, identity: &Identity, timeout_ms: u64) -> R
         Err(e) => {
                 warn!(
                     "Could not start discovery HTTP server on port {}: {e}. \
-                     Close the official app if it is running, or use another --port. \
-                     Peers may only respond via UDP.",
-                    config.port
+                     Close any other process holding port {} (e.g. the LocalSend app, another `lsend receive`), \
+                     or use another --port. Peers may only respond via UDP.",
+                    config.port, config.port
                 );
             None
         }
@@ -339,7 +339,7 @@ async fn send_announcement(
     Ok(())
 }
 
-/// Listen on the standard LocalSend UDP port (53317). Matches the official app listener.
+/// Listen on the standard LocalSend UDP port (53317). Matches the LocalSend app listener.
 fn open_multicast_listen_sockets(port: u16, multicast_group: Ipv4Addr) -> Result<Vec<Arc<UdpSocket>>> {
     let interfaces = list_ipv4_interfaces();
     let mut sockets = Vec::new();
@@ -364,7 +364,7 @@ fn open_multicast_listen_sockets(port: u16, multicast_group: Ipv4Addr) -> Result
     Ok(sockets)
 }
 
-/// Ephemeral UDP ports for outbound announcements (official app behavior).
+/// Ephemeral UDP ports for outbound announcements (matches the LocalSend app).
 fn open_multicast_announce_sockets(multicast_group: Ipv4Addr) -> Vec<Arc<UdpSocket>> {
     let interfaces = list_ipv4_interfaces();
     let mut sockets = Vec::new();

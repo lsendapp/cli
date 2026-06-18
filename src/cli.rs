@@ -5,7 +5,7 @@ use crate::config::AppConfig;
 #[derive(Parser, Debug)]
 #[command(
     name = "lsend",
-    about = "Headless Lsend CLI. Use --json or `lsend agent` for AI agents.",
+    about = "Headless LocalSend CLI. Use --json or `lsend agent` for AI agents.",
     version
 )]
 pub struct Cli {
@@ -48,7 +48,7 @@ pub enum Commands {
     /// Manage the persisted device alias (device name).
     Alias(AliasOpts),
 
-    /// Discover Lsend devices on the local network.
+    /// Discover LocalSend devices on the local network.
     Scan {
         /// How long to wait for responses, in milliseconds.
         #[arg(long, default_value_t = AppConfig::DEFAULT_DISCOVERY_TIMEOUT_MS)]
