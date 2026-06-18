@@ -46,13 +46,13 @@ fn print_alias() {
         r#"## alias — persisted device name
 
 Commands:
-  localsend alias
-  localsend alias show --json
-  localsend alias regenerate --json
-  localsend alias set "My Laptop" --json
+  lsend alias
+  lsend alias show --json
+  lsend alias regenerate --json
+  lsend alias set "My Laptop" --json
 
 Behavior:
-  - Persists to ~/.config/localsend-cli/alias.txt
+  - Persists to ~/.config/lsend/alias.txt
   - Uses official LocalSend word lists (system locale) for regenerate
   - The global --alias flag overrides alias.txt for one command only
 

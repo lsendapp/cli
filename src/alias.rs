@@ -370,7 +370,7 @@ mod tests {
 
     #[test]
     fn load_or_create_persists_alias() {
-        let dir = std::env::temp_dir().join(format!("localsend-cli-alias-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("lsend-alias-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         let first = load_or_create(&dir).unwrap();
         let second = load_or_create(&dir).unwrap();
@@ -380,7 +380,7 @@ mod tests {
 
     #[test]
     fn regenerate_overwrites_persisted_alias() {
-        let dir = std::env::temp_dir().join(format!("localsend-cli-alias-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("lsend-alias-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         save(&dir, "Old Alias").unwrap();
 
@@ -394,7 +394,7 @@ mod tests {
 
     #[test]
     fn set_persisted_rejects_empty_alias() {
-        let dir = std::env::temp_dir().join(format!("localsend-cli-alias-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("lsend-alias-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         assert!(set_persisted(&dir, "   ").is_err());
         let _ = fs::remove_dir_all(dir);
@@ -402,7 +402,7 @@ mod tests {
 
     #[test]
     fn show_or_create_generates_when_missing() {
-        let dir = std::env::temp_dir().join(format!("localsend-cli-alias-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("lsend-alias-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         let result = show_or_create(&dir).unwrap();
         assert!(result.created);

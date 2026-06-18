@@ -54,16 +54,16 @@ Empty `devices` with `ok: true` is not an error.
 
 ## alias
 
-Manage the persisted device alias (official UI: **Device name**). Stored in `~/.config/localsend-cli/alias.txt`.
+Manage the persisted device alias (official UI: **Device name**). Stored in `~/.config/lsend/alias.txt`.
 
 ```bash
-localsend alias show --json
-localsend alias regenerate --json
-localsend alias regenerate --json --locale zh-CN
-localsend alias set "My Laptop" --json
+lsend alias show --json
+lsend alias regenerate --json
+lsend alias regenerate --json --locale zh-CN
+lsend alias set "My Laptop" --json
 ```
 
-`localsend alias` without a subcommand is the same as `alias show`.
+`lsend alias` without a subcommand is the same as `alias show`.
 
 Regenerate JSON:
 
@@ -74,7 +74,7 @@ Regenerate JSON:
   "ok": true,
   "previous": "Adorable Orange",
   "alias": "Clever Banana",
-  "path": "/Users/me/.config/localsend-cli/alias.txt",
+  "path": "/Users/me/.config/lsend/alias.txt",
   "locale": "en"
 }
 ```

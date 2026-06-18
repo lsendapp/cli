@@ -58,7 +58,7 @@ mod tests {
 
     #[test]
     fn cli_pin_is_persisted() {
-        let dir = std::env::temp_dir().join(format!("localsend-receive-pin-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("lsend-receive-pin-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
 
         let pin = resolve(&dir, Some("654321".to_string())).unwrap();
@@ -70,7 +70,7 @@ mod tests {
 
     #[test]
     fn loads_persisted_when_no_cli_pin() {
-        let dir = std::env::temp_dir().join(format!("localsend-receive-pin-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("lsend-receive-pin-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         persist(&dir, "111222").unwrap();
 

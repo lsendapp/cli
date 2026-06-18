@@ -54,7 +54,7 @@ pub async fn send_files(
     let register = RegisterDtoV2 {
         alias: config.alias.clone(),
         version: crate::config::PROTOCOL_VERSION.to_string(),
-        device_model: Some(std::env::consts::OS.to_string()),
+        device_model: Some(crate::util::os_display_name()),
         device_type: Some(localsend::model::discovery::DeviceType::Headless),
         fingerprint: identity.fingerprint.clone(),
         port: config.port,

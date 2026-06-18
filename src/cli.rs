@@ -63,7 +63,7 @@ pub enum Commands {
         /// Files or directories to send (omit when using --text, --message, or --clipboard).
         paths: Vec<String>,
 
-        /// Read text from stdin (pipe). Example: echo "hello" | localsend send <IP> --text
+        /// Read text from stdin (pipe). Example: echo "hello" | lsend send <IP> --text
         #[arg(long, conflicts_with = "message")]
         text: bool,
 

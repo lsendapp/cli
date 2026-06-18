@@ -282,7 +282,7 @@ fn build_register_dto(config: &AppConfig, identity: &Identity) -> RegisterDto {
     RegisterDto {
         alias: config.alias.clone(),
         version: crate::config::PROTOCOL_VERSION.to_string(),
-        device_model: Some(std::env::consts::OS.to_string()),
+        device_model: Some(crate::util::os_display_name()),
         device_type: Some(DeviceType::Headless),
         token: identity.fingerprint.clone(),
         port: config.port,
@@ -428,7 +428,7 @@ fn build_multicast_message(
     MulticastMessageCompat {
         alias: config.alias.clone(),
         version: Some(crate::config::PROTOCOL_VERSION.to_string()),
-        device_model: Some(std::env::consts::OS.to_string()),
+        device_model: Some(crate::util::os_display_name()),
         device_type: Some("headless".to_string()),
         fingerprint: identity.fingerprint.clone(),
         port: Some(config.port),

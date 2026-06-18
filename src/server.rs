@@ -792,7 +792,7 @@ fn info_response_json(state: &ServerState) -> InfoResponseJson {
     InfoResponseJson {
         alias: state.config.alias.clone(),
         version: crate::config::PROTOCOL_VERSION.to_string(),
-        device_model: Some(std::env::consts::OS.to_string()),
+        device_model: Some(crate::util::os_display_name()),
         device_type: Some("headless".to_string()),
         fingerprint: state.identity.fingerprint.clone(),
         download: false,
@@ -807,7 +807,7 @@ fn info_response(state: &ServerState) -> InfoResponseDtoV2 {
     InfoResponseDtoV2 {
         alias: state.config.alias.clone(),
         version: crate::config::PROTOCOL_VERSION.to_string(),
-        device_model: Some(std::env::consts::OS.to_string()),
+        device_model: Some(crate::util::os_display_name()),
         device_type: Some(localsend::model::discovery::DeviceType::Headless),
         fingerprint: state.identity.fingerprint.clone(),
         download: false,
@@ -818,7 +818,7 @@ fn register_response(state: &ServerState) -> RegisterResponseDtoV2 {
     RegisterResponseDtoV2 {
         alias: state.config.alias.clone(),
         version: crate::config::PROTOCOL_VERSION.to_string(),
-        device_model: Some(std::env::consts::OS.to_string()),
+        device_model: Some(crate::util::os_display_name()),
         device_type: Some(localsend::model::discovery::DeviceType::Headless),
         fingerprint: state.identity.fingerprint.clone(),
         download: false,
@@ -863,7 +863,7 @@ mod tests {
 
     #[test]
     fn unique_path_preserves_nested_directories() {
-        let dir = std::env::temp_dir().join(format!("localsend-nested-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("lsend-nested-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let resolved = unique_path(&dir, "photos/vacation/beach.jpg").expect("resolve");
@@ -884,7 +884,7 @@ mod tests {
 
     #[test]
     fn unique_path_deduplicates_within_nested_directory() {
-        let dir = std::env::temp_dir().join(format!("localsend-dedupe-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("lsend-dedupe-{}", Uuid::new_v4()));
         let nested = dir.join("docs");
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(nested.join("readme.md"), b"existing").unwrap();

@@ -159,7 +159,7 @@ fn info_response(state: &DiscoveryServerState) -> InfoResponseDtoV2 {
     InfoResponseDtoV2 {
         alias: state.config.alias.clone(),
         version: crate::config::PROTOCOL_VERSION.to_string(),
-        device_model: Some(std::env::consts::OS.to_string()),
+        device_model: Some(crate::util::os_display_name()),
         device_type: Some(DeviceType::Headless),
         fingerprint: state.identity.fingerprint.clone(),
         download: false,
