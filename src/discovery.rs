@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use localsend::http::dto::{ProtocolType, RegisterDto};
 use localsend::http::dto_v2::ProtocolTypeV2;
 use localsend::model::discovery::DeviceType;
 use serde::Deserialize;
@@ -16,7 +17,7 @@ use tracing::{debug, info, warn};
 use crate::config::{AppConfig, DEFAULT_MULTICAST_GROUP};
 use crate::identity::Identity;
 use crate::legacy::legacy_http_scan;
-use crate::network::list_ipv4_interfaces;
+use crate::network::{build_http_client, list_ipv4_interfaces};
 use crate::scan_server::start as start_discovery_server;
 
 #[derive(Clone, Debug)]
@@ -118,11 +119,34 @@ pub async fn run_responder(config: AppConfig, identity: Identity) -> Result<Mult
     let multicast_group: Ipv4Addr = DEFAULT_MULTICAST_GROUP.parse()?;
     let listen_sockets =
         open_multicast_listen_sockets(config.port, multicast_group).context("Failed to open multicast listen sockets")?;
-    let announce_sockets = open_multicast_announce_sockets(multicast_group);
     let guard = start_multicast_listener(config.clone(), identity.clone(), None, listen_sockets).await?;
-    if !announce_sockets.is_empty() {
-        send_announcement(announce_sockets, &config, &identity, multicast_group).await?;
-    }
+
+    let announce_config = config.clone();
+    let announce_identity = identity.clone();
+    tokio::spawn(async move {
+        let announce_sockets = open_multicast_announce_sockets(multicast_group);
+        if announce_sockets.is_empty() {
+            return;
+        }
+        if let Err(e) = send_announcement(announce_sockets, &announce_config, &announce_identity, multicast_group).await
+        {
+            warn!("Failed to send startup announcement: {e}");
+        }
+
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let sockets = open_multicast_announce_sockets(multicast_group);
+            if sockets.is_empty() {
+                continue;
+            }
+            if let Err(e) = send_announcement(sockets, &announce_config, &announce_identity, multicast_group).await {
+                debug!("Failed to send periodic announcement: {e}");
+            }
+        }
+    });
+
     Ok(guard)
 }
 
@@ -155,8 +179,7 @@ async fn start_multicast_listener(
             loop {
                 match timeout(Duration::from_secs(1), socket.recv_from(&mut buf)).await {
                     Ok(Ok((len, addr))) => {
-                        handle_datagram(&buf[..len], addr.ip(), &config, &identity, collect.as_ref(), &socket)
-                            .await;
+                        handle_datagram(&buf[..len], addr.ip(), &config, &identity, collect.as_ref()).await;
                     }
                     Ok(Err(e)) => {
                         debug!("Multicast recv error: {e}");
@@ -177,7 +200,6 @@ async fn handle_datagram(
     config: &AppConfig,
     identity: &Identity,
     collect: Option<&Arc<Mutex<HashMap<String, DiscoveredDevice>>>>,
-    socket: &UdpSocket,
 ) {
     let Ok(message) = serde_json::from_slice::<MulticastMessageCompat>(payload) else {
         debug!(
@@ -203,17 +225,95 @@ async fn handle_datagram(
         collect
             .lock()
             .await
-            .insert(device.fingerprint.clone(), device);
+            .insert(device.fingerprint.clone(), device.clone());
     }
 
     if message.is_announce() {
-        let response = build_multicast_message(config, identity, false);
-        if let Ok(json) = serde_json::to_vec(&response) {
-            let multicast_group: Ipv4Addr = DEFAULT_MULTICAST_GROUP.parse().unwrap_or(Ipv4Addr::new(224, 0, 0, 167));
-            let dest = SocketAddr::new(multicast_group.into(), config.port);
-            let _ = socket.send_to(&json, dest).await;
+        let config = config.clone();
+        let identity = identity.clone();
+        tokio::spawn(async move {
+            answer_announcement(&config, &identity, &device).await;
+        });
+    }
+}
+
+async fn answer_announcement(config: &AppConfig, identity: &Identity, peer: &DiscoveredDevice) {
+    let payload = build_register_dto(config, identity);
+    let protocol = if peer.https {
+        ProtocolType::Https
+    } else {
+        ProtocolType::Http
+    };
+
+    match build_http_client(identity, peer.https) {
+        Ok(client) => {
+            match client.register(protocol, &peer.ip, peer.port, payload).await {
+                Ok(_) => {
+                    info!(
+                        "Responded to announcement from {} ({}) via HTTP /register",
+                        peer.alias, peer.ip
+                    );
+                    return;
+                }
+                Err(e) => {
+                    debug!(
+                        "HTTP /register to {} ({}) failed ({e}), falling back to UDP",
+                        peer.alias, peer.ip
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            debug!("Failed to build HTTP client for announcement response: {e}");
         }
     }
+
+    if let Err(e) = send_multicast_response(config, identity).await {
+        debug!("UDP fallback for announcement response failed: {e}");
+    } else {
+        info!(
+            "Responded to announcement from {} ({}) via UDP",
+            peer.alias, peer.ip
+        );
+    }
+}
+
+fn build_register_dto(config: &AppConfig, identity: &Identity) -> RegisterDto {
+    RegisterDto {
+        alias: config.alias.clone(),
+        version: crate::config::PROTOCOL_VERSION.to_string(),
+        device_model: Some(std::env::consts::OS.to_string()),
+        device_type: Some(DeviceType::Headless),
+        token: identity.fingerprint.clone(),
+        port: config.port,
+        protocol: if config.https {
+            ProtocolType::Https
+        } else {
+            ProtocolType::Http
+        },
+        has_web_interface: false,
+    }
+}
+
+async fn send_multicast_response(config: &AppConfig, identity: &Identity) -> Result<()> {
+    let multicast_group: Ipv4Addr = DEFAULT_MULTICAST_GROUP.parse()?;
+    let sockets = open_multicast_announce_sockets(multicast_group);
+    if sockets.is_empty() {
+        anyhow::bail!("No multicast announce sockets available");
+    }
+
+    let message = build_multicast_message(config, identity, false);
+    let json = serde_json::to_vec(&message).context("Failed to serialize multicast response")?;
+    let dest = SocketAddr::new(multicast_group.into(), config.port);
+
+    for socket in &sockets {
+        socket
+            .send_to(&json, dest)
+            .await
+            .context("Failed to send multicast response")?;
+    }
+
+    Ok(())
 }
 
 async fn send_announcement(
@@ -307,9 +407,10 @@ fn create_bound_udp_socket(
         .bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)).into())
         .with_context(|| format!("Failed to bind UDP 0.0.0.0:{port}"))?;
 
+    // On macOS, joining with the interface address drops inbound multicast; use INADDR_ANY.
     socket
-        .join_multicast_v4(&multicast_group, &interface)
-        .with_context(|| format!("Failed to join multicast on interface {interface}"))?;
+        .join_multicast_v4(&multicast_group, &Ipv4Addr::UNSPECIFIED)
+        .with_context(|| format!("Failed to join multicast group {multicast_group}"))?;
 
     if !interface.is_unspecified() {
         let _ = socket.set_multicast_if_v4(&interface);

@@ -1,8 +1,10 @@
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use anyhow::Result;
 use tokio::signal;
 use tokio::sync::mpsc;
+use tokio::time::sleep;
 
 use crate::config::AppConfig;
 use crate::discovery;
@@ -30,6 +32,18 @@ pub async fn run(
         Some(stop_tx),
     );
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
+    let server_config = config.clone();
+
+    let server_task = tokio::spawn(async move {
+        if server_config.https {
+            run_https(state, addr).await
+        } else {
+            run_http(state, addr).await
+        }
+    });
+
+    // Give the HTTP server a moment to bind before discovery announcements go out.
+    sleep(Duration::from_millis(100)).await;
 
     let _responder = discovery::run_responder(config.clone(), identity).await?;
 
@@ -54,14 +68,6 @@ pub async fn run(
             receive_dir: config.receive_dir.display().to_string(),
         });
     }
-
-    let server_task = tokio::spawn(async move {
-        if config.https {
-            run_https(state, addr).await
-        } else {
-            run_http(state, addr).await
-        }
-    });
 
     tokio::select! {
         _ = signal::ctrl_c() => {},
