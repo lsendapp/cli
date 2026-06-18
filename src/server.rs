@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use axum::body::Body;
@@ -28,6 +29,10 @@ use crate::config::AppConfig;
 use crate::identity::Identity;
 use crate::output::{OutputMode, ReceiveEventJson, print_json};
 use crate::text_send::text_file_name;
+
+/// Delay before returning 204 for embedded text messages so the mobile sender
+/// can finish its SendPage transition before reading the response.
+const TEXT_MESSAGE_RESPONSE_DELAY: Duration = Duration::from_millis(1200);
 
 #[derive(Clone)]
 pub struct ServerState {
@@ -569,15 +574,12 @@ async fn handle_embedded_text_message(
                 });
                 state.emit_json_event(ReceiveEventJson::TransferComplete);
             }
+            tokio::time::sleep(TEXT_MESSAGE_RESPONSE_DELAY).await;
             if state.stop_after_transfer {
                 if let Some(tx) = &state.stop_tx {
                     let _ = tx.send(());
                 }
             }
-            // Headless receivers respond immediately; the iPhone sender pushes SendPage
-            // before reading this response. A short delay avoids navigation stack glitches
-            // when 204 arrives during the page transition (same order of magnitude as PIN UI).
-            tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
             StatusCode::NO_CONTENT.into_response()
         }
         Err(error) => {
