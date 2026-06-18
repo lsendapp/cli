@@ -81,6 +81,9 @@ Files:
 
 - `cert.pem`, `key.pem`, `fingerprint.txt` — TLS identity
 - `alias.txt` — persisted device name (generated once from official LocalSend word lists using the system locale; override per run with `--alias`)
+- `receive_pin` — persisted receive PIN when set via `lsend receive --pin`
+
+Stdout is automatically JSON when piped or when `LOCALSEND_NO_TUI=1` is set (same as `--json`).
 
 ## License
 

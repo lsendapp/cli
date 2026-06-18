@@ -1,3 +1,5 @@
+use std::io::{IsTerminal, stdout};
+
 use localsend::model::discovery::DeviceType;
 use serde::Serialize;
 
@@ -17,6 +19,11 @@ pub struct OutputOptions {
 }
 
 impl OutputOptions {
+    pub fn from_cli(json_flag: bool, quiet_flag: bool) -> Self {
+        let json = json_flag || should_force_json();
+        Self::new(json, quiet_flag)
+    }
+
     pub fn new(json: bool, quiet: bool) -> Self {
         Self {
             mode: if json { OutputMode::Json } else { OutputMode::Human },
@@ -31,6 +38,20 @@ impl OutputOptions {
     pub fn show_human_progress(&self) -> bool {
         self.mode == OutputMode::Human && !self.quiet
     }
+}
+
+fn should_force_json() -> bool {
+    no_tui_env() || !stdout().is_terminal()
+}
+
+fn no_tui_env() -> bool {
+    matches!(
+        std::env::var("LSEND_NO_TUI")
+            .ok()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    )
 }
 
 #[derive(Debug, Serialize)]
@@ -79,6 +100,8 @@ pub struct ErrorEnvelope {
     pub command: &'static str,
     pub code: &'static str,
     pub error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
 }
 
 pub fn error_envelope(command: &'static str, err: &CliError) -> ErrorEnvelope {
@@ -87,6 +110,7 @@ pub fn error_envelope(command: &'static str, err: &CliError) -> ErrorEnvelope {
         command,
         code: err.code(),
         error: err.to_string(),
+        hint: err.hint(),
     }
 }
 
@@ -143,4 +167,26 @@ pub enum ReceiveEventJson {
     TransferComplete,
     TransferCancelled,
     Shutdown,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::CliError;
+
+    #[test]
+    fn error_envelope_includes_hint() {
+        let err = CliError::PortInUse { port: 53317 };
+        let envelope = error_envelope("receive", &err);
+        assert_eq!(envelope.code, "port_in_use");
+        assert!(envelope.hint.is_some());
+    }
+
+    #[test]
+    fn no_tui_env_forces_json_mode() {
+        std::env::set_var("LSEND_NO_TUI", "1");
+        let output = OutputOptions::from_cli(false, false);
+        std::env::remove_var("LSEND_NO_TUI");
+        assert!(output.is_json());
+    }
 }

@@ -24,9 +24,10 @@ Run `lsend agent <topic>` for focused instructions:
   eval      Smoke-test checklist for agents
 
 Global flags for automation:
-  --json           Structured stdout (required for parsing)
+  --json           Structured stdout (required for parsing; auto when piped)
   --quiet          Suppress human progress text (implied by --json)
   --verbose / -v   Diagnostics on stderr only
+  LSEND_NO_TUI=1   Force JSON stdout (same as --json)
 
 Quick start:
   lsend scan --json --timeout 5000
@@ -118,7 +119,7 @@ fn print_receive() {
         r#"## receive — accept incoming files
 
 Command:
-  lsend receive --json --once [--dir PATH]
+  lsend receive --json --once [--dir PATH] [--pin PIN]
 
 Always use --once for agents so the process exits after the first transfer.
 
@@ -129,12 +130,16 @@ Stdout is NDJSON (one JSON object per line):
   {{"event":"transfer_complete"}}
   {{"event":"shutdown"}}
 
-Optional PIN (receiver side):
-  LSEND_RECEIVE_PIN=123456 lsend receive --json --once
+Receive PIN (sender must pass --pin when sending to you):
+  lsend receive --json --once --pin 123456
+
+PIN priority: --pin (saved to receive_pin) > config file > LSEND_RECEIVE_PIN env.
 
 Important:
+  - Port is checked before bind; port_in_use errors include a hint with remediation.
   - Close the official app before receive (port 53317 conflict).
   - Without --once the process runs until Ctrl+C (avoid for agents).
+  - JSON mode is auto-enabled when stdout is piped or LSEND_NO_TUI=1.
 "#
     );
 }
@@ -154,7 +159,8 @@ Failure stdout with --json:
     "ok": false,
     "command": "send",
     "code": "target_not_found",
-    "error": "No device found with alias \"...\". Run `lsend scan --json` first or pass an IP address."
+    "error": "No device found with alias \"...\".",
+    "hint": "Run `lsend scan --json` first and use the device IP, or pass an IP address directly."
   }}
 
 Error codes (code field):

@@ -79,6 +79,10 @@ pub enum Commands {
         /// Exit after the first completed transfer (recommended for agents).
         #[arg(long)]
         once: bool,
+
+        /// Require this PIN from senders (persisted to config when set).
+        #[arg(long)]
+        pin: Option<String>,
     },
 }
 

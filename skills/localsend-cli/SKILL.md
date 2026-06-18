@@ -14,7 +14,7 @@ Non-interactive file transfer compatible with the official app.
 
 1. Build or locate the binary: `cargo build --release` → `target/release/lsend`
 2. Read focused docs offline: `lsend agent` or `lsend agent send`
-3. Always pass **`--json`** so stdout is machine-parseable
+3. Use **`--json`**, piped stdout, or **`LSEND_NO_TUI=1`** for machine-parseable output
 4. Close the official app before `receive` (port 53317 conflict)
 
 ## Discover devices
@@ -40,10 +40,12 @@ Success JSON includes `"resolved_via": "ip"` and `"files"[].status`.
 
 ```bash
 lsend receive --json --once --dir /tmp/lsend-inbox
+lsend receive --json --once --pin 123456 --dir /tmp/lsend-inbox
 ```
 
 Stdout is NDJSON (`ready` → `file_saved` → `transfer_complete` → `shutdown`).
 Use **`--once`** so the process exits after one transfer.
+Receive PIN: **`--pin`** (persisted to `receive_pin`) > config file > `LSEND_RECEIVE_PIN` env.
 
 ## Errors
 
@@ -56,7 +58,7 @@ Check exit code and JSON envelope:
 | 2 | Target not found / no files |
 | 3 | Port 53317 in use |
 
-Failure JSON: `{"ok":false,"command":"...","code":"port_in_use","error":"..."}`
+Failure JSON: `{"ok":false,"command":"...","code":"port_in_use","error":"...","hint":"..."}`
 
 ## More detail
 

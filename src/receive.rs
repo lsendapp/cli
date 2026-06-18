@@ -13,14 +13,18 @@ use crate::server::{ServerState, run_http, run_https};
 pub async fn run(
     config: AppConfig,
     identity: Identity,
+    receive_pin: Option<String>,
     output: OutputOptions,
     once: bool,
 ) -> Result<()> {
+    crate::port::ensure_available(config.port).await?;
+
     let (stop_tx, mut stop_rx) = mpsc::unbounded_channel::<()>();
 
     let state = ServerState::new(
         config.clone(),
         identity.clone(),
+        receive_pin,
         output.mode,
         once,
         Some(stop_tx),

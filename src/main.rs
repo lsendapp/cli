@@ -8,7 +8,9 @@ mod identity;
 mod legacy;
 mod network;
 mod output;
+mod port;
 mod receive;
+mod receive_pin;
 mod scan_server;
 mod send;
 mod server;
@@ -33,7 +35,7 @@ async fn main() {
 
 async fn run() -> Result<(), i32> {
     let cli = Cli::parse();
-    let output = OutputOptions::new(cli.json, cli.quiet);
+    let output = OutputOptions::from_cli(cli.json, cli.quiet);
 
     if matches!(cli.command, Commands::Agent { .. }) {
         if let Commands::Agent { topic } = cli.command {
@@ -77,12 +79,14 @@ async fn run() -> Result<(), i32> {
         )
         .await
         .map_err(|e| fail("send", output, e))?,
-        Commands::Receive { dir, once } => {
+        Commands::Receive { dir, once, pin } => {
             let mut config = config;
             if let Some(dir) = dir {
                 config.receive_dir = dir.into();
             }
-            receive::run(config, identity, output, once)
+            let receive_pin = receive_pin::resolve(&config.config_dir, pin)
+                .map_err(|e| fail("receive", output, e))?;
+            receive::run(config, identity, receive_pin, output, once)
                 .await
                 .map_err(|e| fail("receive", output, e))?;
         }
@@ -96,7 +100,12 @@ fn fail(command: &'static str, output: OutputOptions, error: impl Into<anyhow::E
     let code = cli_error.exit_code();
     match output.is_json() {
         true => print_json(&error_envelope(command, &cli_error)),
-        false => eprintln!("Error: {cli_error}"),
+        false => {
+            eprintln!("Error: {cli_error}");
+            if let Some(hint) = cli_error.hint() {
+                eprintln!("Hint: {hint}");
+            }
+        }
     }
     code
 }

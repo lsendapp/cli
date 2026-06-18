@@ -31,6 +31,7 @@ use crate::output::{OutputMode, ReceiveEventJson, print_json};
 pub struct ServerState {
     pub config: AppConfig,
     pub identity: Identity,
+    pub receive_pin: Option<String>,
     output: OutputMode,
     stop_after_transfer: bool,
     stop_tx: Option<mpsc::UnboundedSender<()>>,
@@ -66,6 +67,7 @@ impl ServerState {
     pub fn new(
         config: AppConfig,
         identity: Identity,
+        receive_pin: Option<String>,
         output: OutputMode,
         stop_after_transfer: bool,
         stop_tx: Option<mpsc::UnboundedSender<()>>,
@@ -73,6 +75,7 @@ impl ServerState {
         Self {
             config,
             identity,
+            receive_pin,
             output,
             stop_after_transfer,
             stop_tx,
@@ -150,7 +153,7 @@ async fn prepare_upload_handler(
     headers: HeaderMap,
     body: String,
 ) -> Response {
-    if let Some(response) = check_pin(&query, &headers) {
+    if let Some(response) = check_pin(&state, &query, &headers) {
         return response;
     }
 
@@ -408,9 +411,8 @@ fn error_response(status: StatusCode, message: &str) -> Response {
         .into_response()
 }
 
-fn check_pin(query: &HashMap<String, String>, headers: &HeaderMap) -> Option<Response> {
-    let pin = std::env::var("LSEND_RECEIVE_PIN").ok();
-    let Some(expected) = pin.filter(|p| !p.is_empty()) else {
+fn check_pin(state: &ServerState, query: &HashMap<String, String>, headers: &HeaderMap) -> Option<Response> {
+    let Some(expected) = state.receive_pin.as_ref().filter(|pin| !pin.is_empty()) else {
         return None;
     };
 
@@ -425,7 +427,7 @@ fn check_pin(query: &HashMap<String, String>, headers: &HeaderMap) -> Option<Res
         });
 
     match provided {
-        Some(value) if value == expected => None,
+        Some(value) if value == *expected => None,
         Some(_) => Some(error_response(StatusCode::UNAUTHORIZED, "Invalid PIN")),
         None => Some(error_response(StatusCode::UNAUTHORIZED, "PIN required")),
     }
