@@ -29,8 +29,10 @@ impl CliError {
     pub fn hint(&self) -> Option<String> {
         match self {
             Self::PortInUse { port } => Some(format!(
-                "Close the official LocalSend app or another localsend instance, or pass --port with a free port (e.g. --port {}).",
-                port.saturating_add(1)
+                "Close the official app or stop another `lsend receive`. \
+                 Reuse an existing receiver when possible. \
+                 Avoid alternate `--port`: discovery uses the same UDP/TCP port, so the official app and default `scan` (port {}) will not see this device.",
+                port
             )),
             Self::TargetNotFound { .. } => Some(
                 "Run `lsend scan --json` first and use the device IP, or pass an IP address directly."
@@ -88,7 +90,7 @@ impl fmt::Display for CliError {
         match self {
             Self::PortInUse { port } => write!(
                 f,
-                "Port {port} is already in use. Close the official app or pass --port."
+                "Port {port} is already in use. Close the official app or stop another lsend receive."
             ),
             Self::TargetNotFound { target } => write!(
                 f,
@@ -122,6 +124,9 @@ mod tests {
     fn structured_port_in_use_carries_port() {
         let err = CliError::PortInUse { port: 53317 };
         assert!(err.to_string().contains("53317"));
-        assert!(err.hint().unwrap().contains("53318"));
+        let hint = err.hint().unwrap();
+        assert!(hint.contains("53317"));
+        assert!(hint.contains("Reuse an existing receiver"));
+        assert!(hint.contains("Avoid alternate `--port`"));
     }
 }

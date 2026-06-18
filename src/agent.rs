@@ -149,6 +149,8 @@ PIN priority: --pin (saved to receive_pin) > config file > LSEND_RECEIVE_PIN env
 Important:
   - Port is checked before bind; port_in_use errors include a hint with remediation.
   - Close the official app before receive (port 53317 conflict).
+  - Do not use alternate --port for receive: discovery uses the same UDP/TCP port, so the official LocalSend app and default scan (53317) will not see this device.
+  - On port_in_use: close the official app or reuse an existing receiver; do not auto-kill processes or silently switch ports.
   - Without --once the process runs until Ctrl+C (avoid for agents).
   - JSON mode is auto-enabled when stdout is piped or LSEND_NO_TUI=1.
 "#
@@ -175,7 +177,7 @@ Failure stdout with --json:
   }}
 
 Error codes (code field):
-  port_in_use       — bind failed on 53317
+  port_in_use       — bind failed (usually 53317); hint explains discovery impact of alternate ports
   target_not_found  — alias not found (use scan + IP, or drop --no-scan)
   no_files          — send called with no paths and no --text/--message/--clipboard
   error             — other failures

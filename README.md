@@ -44,7 +44,7 @@ lsend send 192.168.1.42 --clipboard
 | Flag | Description |
 |------|-------------|
 | `--http` | Use plain HTTP instead of HTTPS |
-| `--port PORT` | Listen/connect port (default: 53317) |
+| `--port PORT` | Listen/connect port (default: 53317). Keep 53317 for receive — alternate ports break multicast discovery. |
 | `--alias NAME` | Device display name |
 | `-v, --verbose` | Print diagnostic logs on stderr |
 | `--json` | Machine-readable JSON on stdout (see [AGENTS.md](AGENTS.md)) |

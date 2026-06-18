@@ -16,6 +16,7 @@ Non-interactive file transfer compatible with the official app.
 2. Read focused docs offline: `lsend agent` or `lsend agent send`
 3. Use **`--json`**, piped stdout, or **`LSEND_NO_TUI=1`** for machine-parseable output
 4. Close the official app before `receive` (port 53317 conflict)
+5. **Keep port 53317 for receive** — alternate `--port` breaks multicast discovery; the official LocalSend app and default `scan` will not see this device
 
 ## Discover devices
 
