@@ -3,6 +3,7 @@ use crate::cli::AgentCommand;
 pub fn print(topic: Option<AgentCommand>) {
     match topic {
         None => print_overview(),
+        Some(AgentCommand::Alias) => print_alias(),
         Some(AgentCommand::Scan) => print_scan(),
         Some(AgentCommand::Send) => print_send(),
         Some(AgentCommand::Receive) => print_receive(),
@@ -17,6 +18,7 @@ fn print_overview() {
 
 Run `lsend agent <topic>` for focused instructions:
 
+  alias     Persisted device alias (device name)
   scan      Discover devices on the LAN
   send      Send files to a device
   receive   Accept incoming files
@@ -35,6 +37,50 @@ Quick start:
   lsend receive --json --once --dir /tmp/inbox
 
 Full reference: AGENTS.md in the repository root.
+"#
+    );
+}
+
+fn print_alias() {
+    println!(
+        r#"## alias — persisted device name
+
+Commands:
+  localsend alias
+  localsend alias show --json
+  localsend alias regenerate --json
+  localsend alias set "My Laptop" --json
+
+Behavior:
+  - Persists to ~/.config/localsend-cli/alias.txt
+  - Uses official LocalSend word lists (system locale) for regenerate
+  - The global --alias flag overrides alias.txt for one command only
+
+Show JSON:
+  {{
+    "command": "alias",
+    "action": "show",
+    "ok": true,
+    "alias": "Adorable Orange",
+    "path": ".../alias.txt",
+    "locale": "en",
+    "created": false
+  }}
+
+Regenerate JSON:
+  {{
+    "command": "alias",
+    "action": "regenerate",
+    "ok": true,
+    "previous": "Adorable Orange",
+    "alias": "Clever Banana",
+    "path": ".../alias.txt",
+    "locale": "en"
+  }}
+
+Notes:
+  - Restart receive after regenerate/set so peers see the new name.
+  - regenerate --locale zh-CN uses that locale's word list (optional).
 "#
     );
 }
@@ -180,6 +226,7 @@ Error codes (code field):
   port_in_use       — bind failed (usually 53317); hint explains discovery impact of alternate ports
   target_not_found  — alias not found (use scan + IP, or drop --no-scan)
   no_files          — send called with no paths and no --text/--message/--clipboard
+  invalid_alias     — alias set/regenerate validation failed
   error             — other failures
 
 Human mode prints "Error: ..." to stderr; JSON mode prints only the envelope to stdout.
@@ -195,6 +242,7 @@ Run these in order from the built binary (adjust paths as needed):
 
 1. Help / agent docs load
    lsend agent
+   lsend agent alias
    lsend agent scan
 
 2. Discovery (requires a peer running the official app on the LAN)

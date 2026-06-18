@@ -1,5 +1,6 @@
 mod agent;
 mod alias;
+mod alias_cmd;
 mod cli;
 mod config;
 mod discovery;
@@ -21,7 +22,7 @@ use anyhow::Result;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use crate::cli::{Cli, Commands};
+use crate::cli::{AliasAction, Cli, Commands};
 use crate::config::AppConfig;
 use crate::error::CliError;
 use crate::identity::Identity;
@@ -45,6 +46,11 @@ async fn run() -> Result<(), i32> {
         return Ok(());
     }
 
+    if let Commands::Alias(opts) = cli.command {
+        let action = opts.action.unwrap_or(AliasAction::Show);
+        return alias_cmd::run(action, output);
+    }
+
     let default_level = if cli.verbose {
         "lsend=info"
     } else {
@@ -60,7 +66,7 @@ async fn run() -> Result<(), i32> {
         Identity::load_or_create(&config.config_dir, https).map_err(|e| fail("lsend", output, e))?;
 
     match cli.command {
-        Commands::Agent { .. } => unreachable!(),
+        Commands::Agent { .. } | Commands::Alias(_) => unreachable!(),
         Commands::Scan { timeout } => cmd_scan(&config, &identity, timeout, output)
             .await
             .map_err(|e| fail("scan", output, e))?,

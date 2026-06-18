@@ -122,6 +122,40 @@ pub fn print_json<T: Serialize>(value: &T) {
 }
 
 #[derive(Debug, Serialize)]
+pub struct AliasShowResult {
+    pub command: &'static str,
+    pub action: &'static str,
+    pub ok: bool,
+    pub alias: String,
+    pub path: String,
+    pub locale: String,
+    pub created: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AliasRegenerateResult {
+    pub command: &'static str,
+    pub action: &'static str,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous: Option<String>,
+    pub alias: String,
+    pub path: String,
+    pub locale: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AliasSetResult {
+    pub command: &'static str,
+    pub action: &'static str,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous: Option<String>,
+    pub alias: String,
+    pub path: String,
+}
+
+#[derive(Debug, Serialize)]
 pub struct ScanResult {
     pub command: &'static str,
     pub ok: bool,

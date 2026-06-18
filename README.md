@@ -29,6 +29,11 @@ cargo install --path .
 # Discover nearby devices
 lsend scan
 
+# Manage persisted device alias (device name)
+lsend alias show
+lsend alias regenerate
+lsend alias set "My Laptop"
+
 # Receive files (auto-accept, saves to ~/Downloads by default)
 lsend receive
 
@@ -45,7 +50,7 @@ lsend send 192.168.1.42 --clipboard
 |------|-------------|
 | `--http` | Use plain HTTP instead of HTTPS |
 | `--port PORT` | Listen/connect port (default: 53317). Keep 53317 for receive — alternate ports break multicast discovery. |
-| `--alias NAME` | Device display name |
+| `--alias NAME` | Device display name for one command (overrides alias.txt) |
 | `-v, --verbose` | Print diagnostic logs on stderr |
 | `--json` | Machine-readable JSON on stdout (see [AGENTS.md](AGENTS.md)) |
 | `-q, --quiet` | Suppress progress text (human mode; implied by `--json`) |
@@ -65,7 +70,7 @@ lsend send 192.168.1.42 --clipboard
 
 ## AI agents and automation
 
-- **`lsend agent`** — offline progressive docs (`scan`, `send`, `receive`, `errors`, `eval`)
+- **`lsend agent`** — offline progressive docs (`alias`, `scan`, `send`, `receive`, `errors`, `eval`)
 - **[AGENTS.md](AGENTS.md)** — JSON schemas and exit codes
 - **`skills/localsend-cli/SKILL.md`** — Cursor agent skill (copy to `.cursor/skills/`)
 
@@ -86,7 +91,7 @@ Identity (TLS certificate and fingerprint) and the device alias are stored under
 Files:
 
 - `cert.pem`, `key.pem`, `fingerprint.txt` — TLS identity
-- `alias.txt` — persisted device name (generated once from official LocalSend word lists using the system locale; override per run with `--alias`)
+- `alias.txt` — persisted device name (official LocalSend word lists + system locale; override per run with `--alias`; manage with `lsend alias`)
 - `receive_pin` — persisted receive PIN when set via `lsend receive --pin`
 
 Stdout is automatically JSON when piped or when `LOCALSEND_NO_TUI=1` is set (same as `--json`).

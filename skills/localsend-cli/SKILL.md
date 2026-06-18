@@ -16,7 +16,17 @@ Non-interactive file transfer compatible with the official app.
 2. Read focused docs offline: `lsend agent` or `lsend agent send`
 3. Use **`--json`**, piped stdout, or **`LSEND_NO_TUI=1`** for machine-parseable output
 4. Close the official app before `receive` (port 53317 conflict)
-5. **Keep port 53317 for receive** — alternate `--port` breaks multicast discovery; the official LocalSend app and default `scan` will not see this device
+5. **Keep port 53317 for receive** — alternate `--port` breaks multicast discovery; the official app and default `scan` will not see this device
+
+## Device alias
+
+```bash
+lsend alias show --json
+lsend alias regenerate --json
+lsend alias set "My Laptop" --json
+```
+
+Persisted in `~/.config/lsend/alias.txt`. The global `--alias` flag overrides for one command only.
 
 ## Discover devices
 
@@ -60,11 +70,11 @@ Check exit code and JSON envelope:
 |------|---------|
 | 0 | Success |
 | 1 | General error |
-| 2 | Target not found / no files |
+| 2 | Target not found / no files / invalid alias |
 | 3 | Port 53317 in use |
 
 Failure JSON: `{"ok":false,"command":"...","code":"port_in_use","error":"...","hint":"..."}`
 
 ## More detail
 
-Repository files: `AGENTS.md`, `lsend agent errors`, `lsend agent eval`
+Repository files: `AGENTS.md`, `lsend agent alias`, `lsend agent errors`, `lsend agent eval`

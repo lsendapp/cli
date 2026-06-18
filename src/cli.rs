@@ -45,6 +45,9 @@ pub enum Commands {
         topic: Option<AgentCommand>,
     },
 
+    /// Manage the persisted device alias (device name).
+    Alias(AliasOpts),
+
     /// Discover Lsend devices on the local network.
     Scan {
         /// How long to wait for responses, in milliseconds.
@@ -97,8 +100,37 @@ pub enum Commands {
     },
 }
 
+#[derive(clap::Args, Debug)]
+#[command(arg_required_else_help = false)]
+pub struct AliasOpts {
+    #[command(subcommand)]
+    pub action: Option<AliasAction>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AliasAction {
+    /// Show the persisted device alias (creates one if missing).
+    #[command(name = "show")]
+    Show,
+
+    /// Generate a new random alias and save it to alias.txt.
+    Regenerate {
+        /// Locale id for word lists (e.g. en, zh-CN). Defaults to system locale.
+        #[arg(long)]
+        locale: Option<String>,
+    },
+
+    /// Set a custom persisted device alias.
+    Set {
+        /// Device alias (device name shown to peers).
+        name: String,
+    },
+}
+
 #[derive(Subcommand, Debug, Clone, Copy, ValueEnum)]
 pub enum AgentCommand {
+    /// Device alias management workflow.
+    Alias,
     /// Device discovery workflow and JSON schema.
     Scan,
     /// File send workflow; prefer IP targets.

@@ -1,13 +1,14 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use rand::seq::IndexedRandom;
 use serde::Deserialize;
 
 const ALIAS_FILE: &str = "alias.txt";
+const MAX_ALIAS_LEN: usize = 255;
 const LOCALE_DATA: &str = include_str!("../data/alias_locales.json");
 
 #[derive(Debug, Clone, Deserialize)]
@@ -19,29 +20,115 @@ struct AliasLocaleData {
 
 static LOCALE_TABLE: OnceLock<HashMap<String, AliasLocaleData>> = OnceLock::new();
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AliasChangeResult {
+    pub previous: Option<String>,
+    pub alias: String,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AliasShowResult {
+    pub alias: String,
+    pub path: PathBuf,
+    pub created: bool,
+}
+
 fn locale_table() -> &'static HashMap<String, AliasLocaleData> {
     LOCALE_TABLE.get_or_init(|| {
         serde_json::from_str(LOCALE_DATA).expect("alias_locales.json must be valid")
     })
 }
 
+pub fn alias_path(config_dir: &Path) -> PathBuf {
+    config_dir.join(ALIAS_FILE)
+}
+
+pub fn read_persisted(config_dir: &Path) -> Result<Option<String>> {
+    let alias_path = alias_path(config_dir);
+    if !alias_path.exists() {
+        return Ok(None);
+    }
+
+    let alias = fs::read_to_string(&alias_path)
+        .with_context(|| format!("Failed to read alias from {}", alias_path.display()))?
+        .trim()
+        .to_string();
+
+    if alias.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(alias))
+    }
+}
+
+pub fn validate_alias(alias: &str) -> Result<String> {
+    let alias = alias.trim();
+    if alias.is_empty() {
+        bail!("Alias must not be empty");
+    }
+    if alias.len() > MAX_ALIAS_LEN {
+        bail!("Alias must be at most {MAX_ALIAS_LEN} characters");
+    }
+    Ok(alias.to_string())
+}
+
+pub fn save(config_dir: &Path, alias: &str) -> Result<()> {
+    fs::create_dir_all(config_dir).with_context(|| {
+        format!("Failed to create config directory {}", config_dir.display())
+    })?;
+
+    let alias = validate_alias(alias)?;
+    let path = alias_path(config_dir);
+    fs::write(&path, format!("{alias}\n"))
+        .with_context(|| format!("Failed to write alias to {}", path.display()))?;
+    Ok(())
+}
+
 /// Load persisted alias or generate one using the system locale (official app behavior).
 pub fn load_or_create(config_dir: &Path) -> Result<String> {
-    let alias_path = config_dir.join(ALIAS_FILE);
-    if alias_path.exists() {
-        let alias = fs::read_to_string(&alias_path)
-            .with_context(|| format!("Failed to read alias from {}", alias_path.display()))?
-            .trim()
-            .to_string();
-        if !alias.is_empty() {
-            return Ok(alias);
-        }
+    if let Some(alias) = read_persisted(config_dir)? {
+        return Ok(alias);
     }
 
     let alias = generate_random_alias();
-    fs::write(&alias_path, format!("{alias}\n"))
-        .with_context(|| format!("Failed to write alias to {}", alias_path.display()))?;
+    save(config_dir, &alias)?;
     Ok(alias)
+}
+
+pub fn show_or_create(config_dir: &Path) -> Result<AliasShowResult> {
+    let path = alias_path(config_dir);
+    let created = read_persisted(config_dir)?.is_none();
+    let alias = load_or_create(config_dir)?;
+    Ok(AliasShowResult {
+        alias,
+        path,
+        created,
+    })
+}
+
+pub fn regenerate(config_dir: &Path, locale: Option<&str>) -> Result<AliasChangeResult> {
+    let previous = read_persisted(config_dir)?;
+    let locale_id = locale
+        .map(resolve_locale_tag)
+        .unwrap_or_else(resolve_system_locale_id);
+    let alias = generate_random_alias_for_locale(&locale_id);
+    save(config_dir, &alias)?;
+    Ok(AliasChangeResult {
+        previous,
+        alias,
+        path: alias_path(config_dir),
+    })
+}
+
+pub fn set_persisted(config_dir: &Path, alias: &str) -> Result<AliasChangeResult> {
+    let previous = read_persisted(config_dir)?;
+    save(config_dir, alias)?;
+    Ok(AliasChangeResult {
+        previous,
+        alias: validate_alias(alias)?,
+        path: alias_path(config_dir),
+    })
 }
 
 /// Generate a random alias using word lists and word order from the active system locale.
@@ -50,7 +137,7 @@ pub fn generate_random_alias() -> String {
     generate_random_alias_for_locale(&locale_id)
 }
 
-fn generate_random_alias_for_locale(locale_id: &str) -> String {
+pub fn generate_random_alias_for_locale(locale_id: &str) -> String {
     let table = locale_table();
     let data = table
         .get(locale_id)
@@ -101,7 +188,7 @@ fn read_lang_env() -> Option<String> {
         })
 }
 
-fn resolve_locale_tag(tag: &str) -> String {
+pub fn resolve_locale_tag(tag: &str) -> String {
     let parsed = parse_locale_tag(tag);
     for candidate in locale_candidates(&parsed) {
         if locale_table().contains_key(&candidate) {
@@ -288,6 +375,39 @@ mod tests {
         let first = load_or_create(&dir).unwrap();
         let second = load_or_create(&dir).unwrap();
         assert_eq!(first, second);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn regenerate_overwrites_persisted_alias() {
+        let dir = std::env::temp_dir().join(format!("localsend-cli-alias-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        save(&dir, "Old Alias").unwrap();
+
+        let result = regenerate(&dir, Some("en")).unwrap();
+        assert_eq!(result.previous.as_deref(), Some("Old Alias"));
+        assert_ne!(result.alias, "Old Alias");
+        assert_eq!(load_or_create(&dir).unwrap(), result.alias);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn set_persisted_rejects_empty_alias() {
+        let dir = std::env::temp_dir().join(format!("localsend-cli-alias-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        assert!(set_persisted(&dir, "   ").is_err());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn show_or_create_generates_when_missing() {
+        let dir = std::env::temp_dir().join(format!("localsend-cli-alias-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let result = show_or_create(&dir).unwrap();
+        assert!(result.created);
+        assert!(!result.alias.is_empty());
+        assert!(result.path.exists());
         let _ = fs::remove_dir_all(dir);
     }
 }

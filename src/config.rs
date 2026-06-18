@@ -18,14 +18,18 @@ pub struct AppConfig {
     pub receive_dir: PathBuf,
 }
 
+pub fn default_config_dir() -> Result<PathBuf> {
+    Ok(dirs::config_dir()
+        .context("Could not resolve config directory")?
+        .join("lsend"))
+}
+
 impl AppConfig {
     pub const DEFAULT_PORT: u16 = DEFAULT_PORT;
     pub const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = DEFAULT_DISCOVERY_TIMEOUT_MS;
 
     pub fn new(alias: Option<String>, port: u16, https: bool, receive_dir: Option<PathBuf>) -> Result<Self> {
-        let config_dir = dirs::config_dir()
-            .context("Could not resolve config directory")?
-            .join("lsend");
+        let config_dir = default_config_dir()?;
 
         fs::create_dir_all(&config_dir).with_context(|| {
             format!("Failed to create config directory {}", config_dir.display())

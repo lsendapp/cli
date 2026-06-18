@@ -2,7 +2,7 @@
 
 Machine-readable, non-interactive CLI for the LocalSend protocol.
 
-**Progressive docs (offline):** `lsend agent [scan|send|receive|errors|eval]`
+**Progressive docs (offline):** `lsend agent [alias|scan|send|receive|errors|eval]`
 
 **Cursor skill:** `skills/localsend-cli/SKILL.md` (install to `.cursor/skills/` or use `npx skills add` if published)
 
@@ -24,7 +24,7 @@ Machine-readable, non-interactive CLI for the LocalSend protocol.
 | `-v, --verbose` | Diagnostics on stderr |
 | `--http` | Plain HTTP (default: HTTPS) |
 | `--port PORT` | Default `53317`. **Keep 53317 for receive** — alternate ports break multicast discovery (official app and default `scan` will not see this device). |
-| `--alias NAME` | Local display name |
+| `--alias NAME` | Override persisted alias for one command only |
 
 ## Exit codes
 
@@ -32,7 +32,7 @@ Machine-readable, non-interactive CLI for the LocalSend protocol.
 |------|---------|
 | 0 | Success |
 | 1 | General error (`code: "error"`) |
-| 2 | Not found (`target_not_found`, `no_files`) |
+| 2 | Not found / validation (`target_not_found`, `no_files`, `invalid_alias`) |
 | 3 | Port in use (`port_in_use`) |
 
 ## scan
@@ -51,6 +51,37 @@ lsend scan --json --timeout 5000
 ```
 
 Empty `devices` with `ok: true` is not an error.
+
+## alias
+
+Manage the persisted device alias (official UI: **Device name**). Stored in `~/.config/localsend-cli/alias.txt`.
+
+```bash
+localsend alias show --json
+localsend alias regenerate --json
+localsend alias regenerate --json --locale zh-CN
+localsend alias set "My Laptop" --json
+```
+
+`localsend alias` without a subcommand is the same as `alias show`.
+
+Regenerate JSON:
+
+```json
+{
+  "command": "alias",
+  "action": "regenerate",
+  "ok": true,
+  "previous": "Adorable Orange",
+  "alias": "Clever Banana",
+  "path": "/Users/me/.config/localsend-cli/alias.txt",
+  "locale": "en"
+}
+```
+
+Priority for network commands: `--alias NAME` > `alias.txt`.
+
+Restart `receive` after changing the persisted alias so peers see the new name.
 
 ## send
 
@@ -108,5 +139,5 @@ See `lsend agent eval` for a step-by-step smoke test.
 - **Do not use alternate `--port` for receive** unless you accept that other devices cannot discover this CLI via scan. LocalSend multicast discovery binds UDP and TCP to the same port; the official app and default `scan` listen on 53317 only.
 - On `port_in_use`, prefer closing the official app or reusing an existing receiver — do not auto-kill processes or silently switch ports
 - Identity (TLS) stored in `~/.config/lsend/`
-- Device alias persisted in `alias.txt` (official LocalSend word lists + system locale; `--alias` overrides for one run)
+- Device alias persisted in `alias.txt`; manage with `lsend alias`; `--alias` overrides for one run
 - Receive PIN via `receive --pin` (persisted in `receive_pin`) or `LSEND_RECEIVE_PIN`

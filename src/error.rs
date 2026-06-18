@@ -5,6 +5,7 @@ pub enum CliError {
     PortInUse { port: u16 },
     TargetNotFound { target: String },
     NoFiles,
+    InvalidAlias { reason: String },
     Other(String),
 }
 
@@ -14,6 +15,7 @@ impl CliError {
             Self::PortInUse { .. } => "port_in_use",
             Self::TargetNotFound { .. } => "target_not_found",
             Self::NoFiles => "no_files",
+            Self::InvalidAlias { .. } => "invalid_alias",
             Self::Other(_) => "error",
         }
     }
@@ -21,7 +23,7 @@ impl CliError {
     pub fn exit_code(&self) -> i32 {
         match self {
             Self::PortInUse { .. } => 3,
-            Self::TargetNotFound { .. } | Self::NoFiles => 2,
+            Self::TargetNotFound { .. } | Self::NoFiles | Self::InvalidAlias { .. } => 2,
             Self::Other(_) => 1,
         }
     }
@@ -40,6 +42,9 @@ impl CliError {
             ),
             Self::NoFiles => Some(
                 "Pass file paths, or use --text (stdin), --message \"...\", or --clipboard.".to_string(),
+            ),
+            Self::InvalidAlias { .. } => Some(
+                "Provide a non-empty alias up to 255 characters.".to_string(),
             ),
             Self::Other(_) => None,
         }
@@ -75,6 +80,11 @@ impl CliError {
         if message == "No files to send" {
             return Self::NoFiles;
         }
+        if message.starts_with("Alias must") {
+            return Self::InvalidAlias {
+                reason: message,
+            };
+        }
         Self::Other(message)
     }
 }
@@ -97,6 +107,7 @@ impl fmt::Display for CliError {
                 "No device found with alias \"{target}\". Run `lsend scan --json` first or pass an IP address."
             ),
             Self::NoFiles => write!(f, "No files to send"),
+            Self::InvalidAlias { reason } => write!(f, "{reason}"),
             Self::Other(message) => write!(f, "{message}"),
         }
     }
