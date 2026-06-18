@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -632,10 +632,10 @@ async fn upload_handler(
     let destination_dir = session.destination_dir.clone();
     drop(guard);
 
-    let target_path = unique_path(&destination_dir, &desired_name);
-    tokio::fs::create_dir_all(&destination_dir)
-        .await
-        .ok();
+    let target_path = match prepare_receive_path(&destination_dir, &desired_name).await {
+        Ok(path) => path,
+        Err(message) => return error_response(StatusCode::FORBIDDEN, &message),
+    };
 
     let save_result = save_stream(body, &target_path).await;
 
@@ -715,29 +715,77 @@ async fn save_stream(body: Body, path: &Path) -> Result<u64, anyhow::Error> {
     Ok(total)
 }
 
-fn unique_path(dir: &Path, file_name: &str) -> PathBuf {
-    let mut candidate = dir.join(file_name);
-    if !candidate.exists() {
-        return candidate;
+async fn prepare_receive_path(destination_dir: &Path, file_name: &str) -> Result<PathBuf, String> {
+    let target_path = unique_path(destination_dir, file_name)?;
+    tokio::fs::create_dir_all(destination_dir)
+        .await
+        .map_err(|error| format!("Failed to create receive directory: {error}"))?;
+    if let Some(parent) = target_path.parent() {
+        if parent != destination_dir && !parent.starts_with(destination_dir) {
+            return Err("Path traversal is not allowed".to_string());
+        }
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|error| format!("Failed to create directory: {error}"))?;
+    }
+    Ok(target_path)
+}
+
+fn unique_path(dir: &Path, file_name: &str) -> Result<PathBuf, String> {
+    validate_relative_file_name(file_name)?;
+
+    let relative = Path::new(file_name);
+    let parent_dir = relative
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(|parent| dir.join(parent))
+        .unwrap_or_else(|| dir.to_path_buf());
+
+    if !parent_dir.starts_with(dir) {
+        return Err("Path traversal is not allowed".to_string());
     }
 
-    let stem = Path::new(file_name)
+    let leaf = Path::new(
+        relative
+            .file_name()
+            .ok_or_else(|| "Invalid file name".to_string())?,
+    );
+    let stem = leaf
         .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
+        .map(|value| value.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".to_string());
-    let ext = Path::new(file_name)
+    let ext = leaf
         .extension()
-        .map(|s| format!(".{}", s.to_string_lossy()))
+        .map(|value| format!(".{}", value.to_string_lossy()))
         .unwrap_or_default();
 
-    for i in 1..1000 {
-        candidate = dir.join(format!("{stem} ({i}){ext}"));
+    let mut candidate = parent_dir.join(leaf);
+    if !candidate.exists() {
+        return Ok(candidate);
+    }
+
+    for index in 1..1000 {
+        candidate = parent_dir.join(format!("{stem} ({index}){ext}"));
         if !candidate.exists() {
-            return candidate;
+            return Ok(candidate);
         }
     }
 
-    dir.join(format!("{stem}-{}{ext}", Uuid::new_v4()))
+    Ok(parent_dir.join(format!("{stem}-{}{ext}", Uuid::new_v4())))
+}
+
+fn validate_relative_file_name(file_name: &str) -> Result<(), String> {
+    let path = Path::new(file_name);
+    if path.is_absolute() {
+        return Err("Absolute file paths are not allowed".to_string());
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir | Component::RootDir | Component::Prefix(_)))
+    {
+        return Err("Path traversal is not allowed".to_string());
+    }
+    Ok(())
 }
 
 fn info_response_json(state: &ServerState) -> InfoResponseJson {
@@ -812,6 +860,40 @@ fn check_pin(state: &ServerState, query: &HashMap<String, String>, headers: &Hea
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unique_path_preserves_nested_directories() {
+        let dir = std::env::temp_dir().join(format!("localsend-nested-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let resolved = unique_path(&dir, "photos/vacation/beach.jpg").expect("resolve");
+        assert_eq!(
+            resolved,
+            dir.join("photos").join("vacation").join("beach.jpg")
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unique_path_rejects_path_traversal() {
+        let dir = std::env::temp_dir();
+        assert!(unique_path(&dir, "../escape.txt").is_err());
+        assert!(unique_path(&dir, "nested/../../escape.txt").is_err());
+    }
+
+    #[test]
+    fn unique_path_deduplicates_within_nested_directory() {
+        let dir = std::env::temp_dir().join(format!("localsend-dedupe-{}", Uuid::new_v4()));
+        let nested = dir.join("docs");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("readme.md"), b"existing").unwrap();
+
+        let resolved = unique_path(&dir, "docs/readme.md").expect("resolve");
+        assert_eq!(resolved, nested.join("readme (1).md"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn parses_official_style_prepare_upload_with_token_field() {
