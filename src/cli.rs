@@ -19,6 +19,10 @@ pub struct Cli {
     /// Device display name.
     #[arg(long, global = true)]
     pub alias: Option<String>,
+
+    /// Print diagnostic logs (also available via RUST_LOG=info).
+    #[arg(short, long, global = true)]
+    pub verbose: bool,
 }
 
 #[derive(Subcommand, Debug)]

@@ -26,7 +26,8 @@ rustls = { version = "0.23", default-features = false, features = ["std", "loggi
 axum = "0.8"
 axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
 
-socket2 = "0.5"
+socket2 = { version = "0.5", features = ["all"] }
+if-addrs = "0.14"
 
 futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }

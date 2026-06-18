@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use indicatif::{ProgressBar, ProgressStyle};
-use localsend::http::client::{LsHttpClient, LsHttpClientV2, LsHttpClientVersion};
+use localsend::http::client::LsHttpClient;
 use localsend::http::dto::ProtocolType;
 use localsend::http::dto_v2::{PrepareUploadRequestDtoV2, ProtocolTypeV2, RegisterDtoV2};
 use localsend::model::transfer::FileDto;
@@ -31,7 +31,7 @@ pub async fn send_files(
         bail!("No files to send");
     }
 
-    let client = build_client(identity, config.https)?;
+    let client = build_http_client(identity, config.https)?;
     let protocol = if device.https {
         ProtocolType::Https
     } else {
@@ -224,14 +224,4 @@ fn local_file_from_path(path: &Path, file_name: &str) -> Result<LocalFile> {
     })
 }
 
-fn build_client(identity: &Identity, https: bool) -> Result<LsHttpClient> {
-    if https {
-        Ok(LsHttpClient::new(
-            &identity.key_pem,
-            &identity.cert_pem,
-            LsHttpClientVersion::V2,
-        )?)
-    } else {
-        Ok(LsHttpClient::V2(LsHttpClientV2::try_new_without_cert()?))
-    }
-}
+use crate::network::build_http_client;

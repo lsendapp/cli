@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 pub const PROTOCOL_VERSION: &str = "2.1";
 pub const DEFAULT_PORT: u16 = 53317;
 pub const DEFAULT_MULTICAST_GROUP: &str = "224.0.0.167";
-pub const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 500;
+pub const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 1500;
 
 #[derive(Clone, Debug)]
 pub struct AppConfig {

@@ -43,12 +43,13 @@ lsend send 192.168.1.42 ./photo.png ./notes.txt
 | `--http` | Use plain HTTP instead of HTTPS |
 | `--port PORT` | Listen/connect port (default: 53317) |
 | `--alias NAME` | Device display name |
+| `-v, --verbose` | Print diagnostic logs during scan/send/receive |
 
 ### Per-subcommand options
 
 | Subcommand | Flag | Description |
 |------------|------|-------------|
-| `scan` | `--timeout MS` | How long to wait for responses, in milliseconds (default: 500) |
+| `scan` | `--timeout MS` | How long to wait for responses, in milliseconds (default: 1500) |
 | `send` | `--pin PIN` | PIN when sending to a PIN-protected receiver |
 | `receive` | `--dir PATH` | Directory where received files are saved (default: Downloads) |
 

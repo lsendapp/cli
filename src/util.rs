@@ -1,3 +1,4 @@
+use localsend::model::discovery::DeviceType;
 use rand::seq::IndexedRandom;
 
 const ADJECTIVES: &[&str] = &[
@@ -26,6 +27,18 @@ pub fn fingerprint_from_cert_pem(cert_pem: &str) -> anyhow::Result<String> {
 
 pub fn random_fingerprint() -> String {
     uuid::Uuid::new_v4().simple().to_string()
+}
+
+/// Official clients send lowercase values (`desktop`); the core crate expects `DESKTOP`.
+pub fn parse_device_type(value: &str) -> Option<DeviceType> {
+    match value.to_ascii_lowercase().as_str() {
+        "mobile" => Some(DeviceType::Mobile),
+        "desktop" => Some(DeviceType::Desktop),
+        "web" => Some(DeviceType::Web),
+        "headless" => Some(DeviceType::Headless),
+        "server" => Some(DeviceType::Server),
+        _ => None,
+    }
 }
 
 fn pem_to_der(pem: &str) -> anyhow::Result<Vec<u8>> {

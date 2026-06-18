@@ -2,7 +2,10 @@ mod cli;
 mod config;
 mod discovery;
 mod identity;
+mod legacy;
+mod network;
 mod receive;
+mod scan_server;
 mod send;
 mod server;
 mod util;
@@ -17,11 +20,15 @@ use crate::identity::Identity;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("lsend=info".parse()?))
-        .init();
-
     let cli = Cli::parse();
+
+    let default_level = if cli.verbose {
+        "lsend=info"
+    } else {
+        "lsend=warn"
+    };
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
     let https = !cli.http;
     let config = AppConfig::new(cli.alias, cli.port, https, None)?;
     let identity = Identity::load_or_create(&config.config_dir, https)?;
