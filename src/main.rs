@@ -7,6 +7,7 @@ mod discovery;
 mod error;
 mod identity;
 mod legacy;
+mod mtls;
 mod network;
 mod output;
 mod port;

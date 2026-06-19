@@ -7,6 +7,7 @@ pub(crate) mod discovery;
 pub(crate) mod error;
 pub(crate) mod identity;
 pub(crate) mod legacy;
+pub(crate) mod mtls;
 pub(crate) mod network;
 pub(crate) mod output;
 pub(crate) mod port;

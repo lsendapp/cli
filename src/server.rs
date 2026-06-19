@@ -52,6 +52,7 @@ struct InnerState {
 struct ReceiveSession {
     session_id: String,
     sender_ip: String,
+    sender_version: String,
     destination_dir: PathBuf,
     files: HashMap<String, ReceivingFileEntry>,
     status: SessionStatus,
@@ -121,14 +122,32 @@ pub async fn run_http(state: ServerState, addr: SocketAddr) -> Result<()> {
 pub async fn run_https(state: ServerState, addr: SocketAddr) -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let config = RustlsConfig::from_pem(
-        state.identity.cert_pem.clone().into_bytes(),
-        state.identity.key_pem.clone().into_bytes(),
-    )
-    .await?;
+    use rustls::pki_types::pem::PemObject;
+
+    let certs: Vec<rustls::pki_types::CertificateDer<'static>> = vec![
+        rustls::pki_types::CertificateDer::from_pem_slice(state.identity.cert_pem.as_bytes())
+            .map_err(|e| anyhow::anyhow!("Failed to parse certificate: {e}"))?,
+    ];
+    let key = rustls::pki_types::PrivateKeyDer::from_pem_slice(state.identity.key_pem.as_bytes())
+        .map_err(|e| anyhow::anyhow!("Failed to parse private key: {e}"))?;
+
+    let verifier = crate::mtls::LocalSendClientCertVerifier::try_new(&state.identity.cert_pem)
+        .map_err(|e| anyhow::anyhow!("Failed to build client cert verifier: {e:#}"))?;
+
+    let server_config = rustls::ServerConfig::builder()
+        .with_client_cert_verifier(Arc::new(verifier))
+        .with_single_cert(certs, key)
+        .map_err(|e| anyhow::anyhow!("Failed to build rustls ServerConfig: {e}"))?;
+
+    // axum-server's `RustlsConfig::from_pem` sets ALPN to ["h2", "http/1.1"].
+    // `from_config` does not, so set it ourselves to match LocalSend peers.
+    let mut server_config = server_config;
+    server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+    let config = RustlsConfig::from_config(Arc::new(server_config));
 
     let app = build_router(state);
-    tracing::info!("Listening on https://{addr}");
+    tracing::info!("Listening on https://{addr} (mTLS: client cert required)");
     axum_server::bind_rustls(addr, config)
         .serve(app.into_make_service_with_connect_info::<SocketAddr>())
         .await?;
@@ -324,6 +343,7 @@ async fn prepare_upload_handler(
     guard.session = Some(ReceiveSession {
         session_id: session_id.clone(),
         sender_ip,
+        sender_version: request.sender_version,
         destination_dir,
         files: session_files,
         status: SessionStatus::Sending,
@@ -342,6 +362,7 @@ async fn prepare_upload_handler(
 
 struct ParsedPrepareUpload {
     sender_alias: String,
+    sender_version: String,
     files: HashMap<String, FileDto>,
 }
 
@@ -437,6 +458,7 @@ fn parse_prepare_upload_request(body: &str) -> Result<ParsedPrepareUpload, Prepa
         }
         return Ok(ParsedPrepareUpload {
             sender_alias: dto.info.alias,
+            sender_version: dto.info.version.unwrap_or_else(|| "1.0".to_string()),
             files,
         });
     }
@@ -448,6 +470,7 @@ fn parse_prepare_upload_request(body: &str) -> Result<ParsedPrepareUpload, Prepa
         .ok_or(PrepareUploadParseError::MissingField("info"))?;
     let alias = read_string_field(info, &["alias"])
         .ok_or(PrepareUploadParseError::MissingField("info.alias"))?;
+    let version = read_string_field(info, &["version"]).unwrap_or_else(|| "1.0".to_string());
 
     let files_value = root
         .get("files")
@@ -459,7 +482,7 @@ fn parse_prepare_upload_request(body: &str) -> Result<ParsedPrepareUpload, Prepa
         files.insert(map_key.clone(), parse_file_dto(map_key, file_value)?);
     }
 
-    Ok(ParsedPrepareUpload { sender_alias: alias, files })
+    Ok(ParsedPrepareUpload { sender_alias: alias, sender_version: version, files })
 }
 
 fn read_string_field(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
@@ -710,19 +733,52 @@ async fn upload_handler(
     StatusCode::OK.into_response()
 }
 
-async fn cancel_handler(State(state): State<ServerState>, Query(params): Query<HashMap<String, String>>) -> StatusCode {
+async fn cancel_handler(
+    State(state): State<ServerState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Query(params): Query<HashMap<String, String>>,
+) -> StatusCode {
     let requested = params.get("sessionId").cloned();
+    // We treat a missing `sessionId` query parameter as a v1 cancel; v2 peers
+    // always include the session id. This mirrors the path-level v1/v2 routing
+    // used by the official app.
+    let v2_cancel = requested.is_some();
     let mut guard = state.inner.lock().await;
+
     if let Some(session) = &guard.session {
-        if requested.as_ref() == Some(&session.session_id) || requested.is_none() {
-            state.notify_human("Transfer cancelled by sender.");
-            if state.output == OutputMode::Json {
-                state.emit_json_event(ReceiveEventJson::TransferCancelled);
-            }
-            guard.session = None;
+        // Disallow v1 cancel against an active v2 session.
+        if !v2_cancel && session.sender_version != "1.0" {
+            return StatusCode::FORBIDDEN;
         }
+        // The requester IP must match the session sender IP.
+        if session.sender_ip != addr.ip().to_string() {
+            return StatusCode::FORBIDDEN;
+        }
+        // v2 cancel must carry a matching sessionId (except during waiting, but
+        // the CLI's auto-accept headless mode never enters a waiting state).
+        if v2_cancel && requested.as_deref() != Some(session.session_id.as_str()) {
+            return StatusCode::FORBIDDEN;
+        }
+        // Only active (sending / finished-with-errors) sessions can be cancelled.
+        if session.status != SessionStatus::Sending
+            && session.status != SessionStatus::FinishedWithErrors
+        {
+            return StatusCode::FORBIDDEN;
+        }
+
+        state.notify_human("Transfer cancelled by sender.");
+        if state.output == OutputMode::Json {
+            state.emit_json_event(ReceiveEventJson::TransferCancelled);
+        }
+        guard.session = None;
+        return StatusCode::OK;
     }
-    StatusCode::OK
+
+    // No active receive session. The CLI does not currently host long-lived
+    // send sessions (sends are fire-and-forget), so a cancel targeting a
+    // non-existent session is a no-op. Reject with 403 so legitimate callers
+    // can detect misrouted cancels.
+    StatusCode::FORBIDDEN
 }
 
 async fn save_stream(body: Body, path: &Path) -> Result<u64, anyhow::Error> {
