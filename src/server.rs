@@ -42,6 +42,7 @@ pub struct ServerState {
     stop_after_transfer: bool,
     stop_tx: Option<mpsc::UnboundedSender<()>>,
     inner: Arc<Mutex<InnerState>>,
+    pin_attempts: Arc<Mutex<HashMap<String, u32>>>,
 }
 
 struct InnerState {
@@ -60,6 +61,7 @@ struct ReceiveSession {
 enum SessionStatus {
     Sending,
     Finished,
+    FinishedWithErrors,
 }
 
 struct ReceivingFileEntry {
@@ -67,6 +69,7 @@ struct ReceivingFileEntry {
     token: String,
     desired_name: String,
     path: Option<PathBuf>,
+    failed: bool,
 }
 
 impl ServerState {
@@ -86,6 +89,7 @@ impl ServerState {
             stop_after_transfer,
             stop_tx,
             inner: Arc::new(Mutex::new(InnerState { session: None })),
+            pin_attempts: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -255,7 +259,7 @@ async fn prepare_upload_handler(
     body: String,
     v2_api: bool,
 ) -> Response {
-    if let Some(response) = check_pin(&state, &query, &headers) {
+    if let Some(response) = check_pin(&state, addr.ip(), &query, &headers).await {
         return response;
     }
 
@@ -299,6 +303,7 @@ async fn prepare_upload_handler(
                 token,
                 desired_name,
                 path: None,
+                failed: false,
             },
         );
     }
@@ -605,7 +610,7 @@ async fn upload_handler(
 
     if let Some(expected_session_id) = &session_id {
         if session.session_id != *expected_session_id {
-            return error_response(StatusCode::CONFLICT, "Wrong session id");
+            return error_response(StatusCode::FORBIDDEN, "Invalid session id");
         }
     }
 
@@ -616,8 +621,13 @@ async fn upload_handler(
         );
     }
 
-    if session.status != SessionStatus::Sending {
+    if session.status != SessionStatus::Sending && session.status != SessionStatus::FinishedWithErrors {
         return error_response(StatusCode::CONFLICT, "Recipient is in wrong state");
+    }
+
+    // Resuming a failed session: mark it active again so concurrent state checks see "sending".
+    if session.status == SessionStatus::FinishedWithErrors {
+        session.status = SessionStatus::Sending;
     }
 
     let Some(entry) = session.files.get_mut(&file_id) else {
@@ -627,6 +637,8 @@ async fn upload_handler(
     if entry.token != token {
         return error_response(StatusCode::FORBIDDEN, "Invalid token");
     }
+
+    entry.failed = false;
 
     let desired_name = entry.desired_name.clone();
     let destination_dir = session.destination_dir.clone();
@@ -650,6 +662,7 @@ async fn upload_handler(
     match save_result {
         Ok(bytes) => {
             entry.path = Some(target_path.clone());
+            entry.failed = false;
             state.notify_human(format!(
                 "Saved {} ({} bytes)",
                 target_path.display(),
@@ -664,20 +677,32 @@ async fn upload_handler(
             }
         }
         Err(e) => {
+            entry.failed = true;
             return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
         }
     }
 
-    if session.files.values().all(|f| f.path.is_some()) {
-        session.status = SessionStatus::Finished;
-        state.notify_human("Transfer complete.");
-        if state.output == OutputMode::Json {
-            state.emit_json_event(ReceiveEventJson::TransferComplete);
-        }
-        guard.session = None;
-        if state.stop_after_transfer {
-            if let Some(tx) = &state.stop_tx {
-                let _ = tx.send(());
+    let all_done = session.files.values().all(|f| f.path.is_some() || f.failed);
+    if all_done {
+        let has_error = session.files.values().any(|f| f.failed);
+        if has_error {
+            // Keep the session alive so the sender can retry failed files.
+            session.status = SessionStatus::FinishedWithErrors;
+            state.notify_human("Transfer finished with errors.");
+            if state.output == OutputMode::Json {
+                state.emit_json_event(ReceiveEventJson::TransferFinishedWithErrors);
+            }
+        } else {
+            session.status = SessionStatus::Finished;
+            state.notify_human("Transfer complete.");
+            if state.output == OutputMode::Json {
+                state.emit_json_event(ReceiveEventJson::TransferComplete);
+            }
+            guard.session = None;
+            if state.stop_after_transfer {
+                if let Some(tx) = &state.stop_tx {
+                    let _ = tx.send(());
+                }
             }
         }
     }
@@ -835,10 +860,24 @@ fn error_response(status: StatusCode, message: &str) -> Response {
         .into_response()
 }
 
-fn check_pin(state: &ServerState, query: &HashMap<String, String>, headers: &HeaderMap) -> Option<Response> {
+async fn check_pin(
+    state: &ServerState,
+    client_ip: std::net::IpAddr,
+    query: &HashMap<String, String>,
+    headers: &HeaderMap,
+) -> Option<Response> {
     let Some(expected) = state.receive_pin.as_ref().filter(|pin| !pin.is_empty()) else {
         return None;
     };
+
+    let mut attempts_guard = state.pin_attempts.lock().await;
+    let attempts = attempts_guard.entry(client_ip.to_string()).or_insert(0);
+    if *attempts >= 3 {
+        return Some(error_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many attempts.",
+        ));
+    }
 
     let provided = query
         .get("pin")
@@ -850,10 +889,22 @@ fn check_pin(state: &ServerState, query: &HashMap<String, String>, headers: &Hea
                 .map(str::to_string)
         });
 
-    match provided {
-        Some(value) if value == *expected => None,
-        Some(_) => Some(error_response(StatusCode::UNAUTHORIZED, "Invalid PIN")),
-        None => Some(error_response(StatusCode::UNAUTHORIZED, "PIN required")),
+    match provided.as_deref() {
+        None | Some("") => Some(error_response(StatusCode::UNAUTHORIZED, "PIN required")),
+        Some(value) if value == expected.as_str() => None,
+        Some(_) => {
+            // Non-empty wrong PIN: count the attempt.
+            let previous = *attempts;
+            *attempts = previous + 1;
+            if previous == 2 {
+                Some(error_response(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "Too many attempts.",
+                ))
+            } else {
+                Some(error_response(StatusCode::UNAUTHORIZED, "Invalid PIN"))
+            }
+        }
     }
 }
 

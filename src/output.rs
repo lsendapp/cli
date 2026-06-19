@@ -218,6 +218,7 @@ pub enum ReceiveEventJson {
         size: u64,
     },
     TransferComplete,
+    TransferFinishedWithErrors,
     TransferCancelled,
     Shutdown,
 }
@@ -248,9 +249,14 @@ mod tests {
 
     #[test]
     fn no_tui_env_forces_json_mode() {
-        std::env::set_var("LSEND_NO_TUI", "1");
+        // SAFETY: this test runs single-threaded; env var mutation is isolated to this test.
+        unsafe {
+            std::env::set_var("LSEND_NO_TUI", "1");
+        }
         let output = OutputOptions::from_cli(false, false);
-        std::env::remove_var("LSEND_NO_TUI");
+        unsafe {
+            std::env::remove_var("LSEND_NO_TUI");
+        }
         assert!(output.is_json());
     }
 
