@@ -94,3 +94,40 @@ impl ClientCertVerifier for LocalSendClientCertVerifier {
         self.inner.supported_verify_schemes()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_cert_pem() -> String {
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        cert.cert.pem()
+    }
+
+    #[test]
+    fn try_new_accepts_valid_pem() {
+        let pem = sample_cert_pem();
+        let verifier = LocalSendClientCertVerifier::try_new(&pem).expect("verifier");
+        // Verifier should advertise mandatory client auth and a non-empty
+        // subject hint list rooted at the server cert.
+        assert!(verifier.offer_client_auth());
+        assert!(verifier.client_auth_mandatory());
+        assert!(!verifier.root_hint_subjects().is_empty());
+        // At minimum one signature scheme should be supported.
+        assert!(!verifier.supported_verify_schemes().is_empty());
+    }
+
+    #[test]
+    fn try_new_rejects_invalid_pem() {
+        let result = LocalSendClientCertVerifier::try_new("not a cert");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn debug_impl_does_not_panic() {
+        let pem = sample_cert_pem();
+        let verifier = LocalSendClientCertVerifier::try_new(&pem).unwrap();
+        let s = format!("{verifier:?}");
+        assert!(!s.is_empty());
+    }
+}

@@ -360,6 +360,7 @@ async fn prepare_upload_handler(
     }
 }
 
+#[derive(Debug)]
 struct ParsedPrepareUpload {
     sender_alias: String,
     sender_version: String,
@@ -733,52 +734,61 @@ async fn upload_handler(
     StatusCode::OK.into_response()
 }
 
+/// Outcome of evaluating a cancel request against the current session state.
+/// Extracted as a pure function so it can be unit-tested without spinning up
+/// an axum router.
+#[derive(Debug, PartialEq, Eq)]
+enum CancelDecision {
+    /// Cancel is allowed; the caller should clear the session and return 200.
+    Allow,
+    /// Cancel is denied for the given reason; the caller should return 403.
+    Deny(&'static str),
+}
+
+fn evaluate_cancel(
+    session: Option<&ReceiveSession>,
+    requester_ip: &str,
+    requested_session_id: Option<&str>,
+) -> CancelDecision {
+    let v2_cancel = requested_session_id.is_some();
+    let Some(session) = session else {
+        return CancelDecision::Deny("no active session");
+    };
+
+    if !v2_cancel && session.sender_version != "1.0" {
+        return CancelDecision::Deny("v1 cancel against v2 session");
+    }
+    if session.sender_ip != requester_ip {
+        return CancelDecision::Deny("ip mismatch");
+    }
+    if v2_cancel && requested_session_id != Some(session.session_id.as_str()) {
+        return CancelDecision::Deny("session id mismatch");
+    }
+    if session.status != SessionStatus::Sending && session.status != SessionStatus::FinishedWithErrors {
+        return CancelDecision::Deny("session not cancellable in current state");
+    }
+    CancelDecision::Allow
+}
+
 async fn cancel_handler(
     State(state): State<ServerState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Query(params): Query<HashMap<String, String>>,
 ) -> StatusCode {
     let requested = params.get("sessionId").cloned();
-    // We treat a missing `sessionId` query parameter as a v1 cancel; v2 peers
-    // always include the session id. This mirrors the path-level v1/v2 routing
-    // used by the official app.
-    let v2_cancel = requested.is_some();
     let mut guard = state.inner.lock().await;
 
-    if let Some(session) = &guard.session {
-        // Disallow v1 cancel against an active v2 session.
-        if !v2_cancel && session.sender_version != "1.0" {
-            return StatusCode::FORBIDDEN;
+    match evaluate_cancel(guard.session.as_ref(), &addr.ip().to_string(), requested.as_deref()) {
+        CancelDecision::Allow => {
+            state.notify_human("Transfer cancelled by sender.");
+            if state.output == OutputMode::Json {
+                state.emit_json_event(ReceiveEventJson::TransferCancelled);
+            }
+            guard.session = None;
+            StatusCode::OK
         }
-        // The requester IP must match the session sender IP.
-        if session.sender_ip != addr.ip().to_string() {
-            return StatusCode::FORBIDDEN;
-        }
-        // v2 cancel must carry a matching sessionId (except during waiting, but
-        // the CLI's auto-accept headless mode never enters a waiting state).
-        if v2_cancel && requested.as_deref() != Some(session.session_id.as_str()) {
-            return StatusCode::FORBIDDEN;
-        }
-        // Only active (sending / finished-with-errors) sessions can be cancelled.
-        if session.status != SessionStatus::Sending
-            && session.status != SessionStatus::FinishedWithErrors
-        {
-            return StatusCode::FORBIDDEN;
-        }
-
-        state.notify_human("Transfer cancelled by sender.");
-        if state.output == OutputMode::Json {
-            state.emit_json_event(ReceiveEventJson::TransferCancelled);
-        }
-        guard.session = None;
-        return StatusCode::OK;
+        CancelDecision::Deny(_) => StatusCode::FORBIDDEN,
     }
-
-    // No active receive session. The CLI does not currently host long-lived
-    // send sessions (sends are fire-and-forget), so a cancel targeting a
-    // non-existent session is a no-op. Reject with 403 so legitimate callers
-    // can detect misrouted cancels.
-    StatusCode::FORBIDDEN
 }
 
 async fn save_stream(body: Body, path: &Path) -> Result<u64, anyhow::Error> {
@@ -1097,5 +1107,317 @@ mod tests {
         }"#;
         let parsed = parse_prepare_upload_request(json).expect("parse");
         assert_eq!(parsed.files.get("f1").map(|f| f.size), Some(1024));
+    }
+
+    fn dummy_session(id: &str, ip: &str, version: &str, status: SessionStatus) -> ReceiveSession {
+        ReceiveSession {
+            session_id: id.to_string(),
+            sender_ip: ip.to_string(),
+            sender_version: version.to_string(),
+            destination_dir: PathBuf::from("/tmp"),
+            files: HashMap::new(),
+            status,
+        }
+    }
+
+    #[test]
+    fn evaluate_cancel_allows_v1_against_v1_session() {
+        let s = dummy_session("s1", "10.0.0.1", "1.0", SessionStatus::Sending);
+        assert_eq!(
+            evaluate_cancel(Some(&s), "10.0.0.1", None),
+            CancelDecision::Allow
+        );
+    }
+
+    #[test]
+    fn evaluate_cancel_allows_v2_with_matching_session_id() {
+        let s = dummy_session("abc", "10.0.0.1", "2.1", SessionStatus::Sending);
+        assert_eq!(
+            evaluate_cancel(Some(&s), "10.0.0.1", Some("abc")),
+            CancelDecision::Allow
+        );
+    }
+
+    #[test]
+    fn evaluate_cancel_allows_finished_with_errors() {
+        let s = dummy_session("abc", "10.0.0.1", "2.1", SessionStatus::FinishedWithErrors);
+        assert_eq!(
+            evaluate_cancel(Some(&s), "10.0.0.1", Some("abc")),
+            CancelDecision::Allow
+        );
+    }
+
+    #[test]
+    fn evaluate_cancel_denies_v1_against_v2_session() {
+        let s = dummy_session("abc", "10.0.0.1", "2.1", SessionStatus::Sending);
+        assert!(matches!(
+            evaluate_cancel(Some(&s), "10.0.0.1", None),
+            CancelDecision::Deny(_)
+        ));
+    }
+
+    #[test]
+    fn evaluate_cancel_denies_ip_mismatch() {
+        let s = dummy_session("abc", "10.0.0.1", "2.1", SessionStatus::Sending);
+        assert!(matches!(
+            evaluate_cancel(Some(&s), "10.0.0.2", Some("abc")),
+            CancelDecision::Deny(_)
+        ));
+    }
+
+    #[test]
+    fn evaluate_cancel_denies_v2_with_wrong_session_id() {
+        let s = dummy_session("abc", "10.0.0.1", "2.1", SessionStatus::Sending);
+        assert!(matches!(
+            evaluate_cancel(Some(&s), "10.0.0.1", Some("xyz")),
+            CancelDecision::Deny(_)
+        ));
+    }
+
+    #[test]
+    fn evaluate_cancel_denies_when_no_session() {
+        assert!(matches!(
+            evaluate_cancel(None, "10.0.0.1", Some("abc")),
+            CancelDecision::Deny(_)
+        ));
+    }
+
+    #[test]
+    fn evaluate_cancel_denies_in_finished_state() {
+        // Once a transfer is `Finished`, it is no longer cancellable.
+        let s = dummy_session("abc", "10.0.0.1", "2.1", SessionStatus::Finished);
+        assert!(matches!(
+            evaluate_cancel(Some(&s), "10.0.0.1", Some("abc")),
+            CancelDecision::Deny(_)
+        ));
+    }
+
+    #[test]
+    fn is_text_file_type_matches_text_and_text_slash() {
+        assert!(is_text_file_type("text"));
+        assert!(is_text_file_type("text/plain"));
+        assert!(is_text_file_type("TEXT/PLAIN"));
+        assert!(!is_text_file_type("image/png"));
+        assert!(!is_text_file_type("application/json"));
+    }
+
+    #[test]
+    fn extract_embedded_text_message_only_for_single_text_file() {
+        let mut files = HashMap::new();
+        files.insert(
+            "a".to_string(),
+            FileDto {
+                id: "a".to_string(),
+                file_name: "a.txt".to_string(),
+                size: 5,
+                file_type: "text/plain".to_string(),
+                sha256: None,
+                preview: Some("hello".to_string()),
+                metadata: None,
+            },
+        );
+        assert_eq!(extract_embedded_text_message(&files), Some("hello"));
+
+        // Non-text file type is not a text message.
+        let mut files = HashMap::new();
+        files.insert(
+            "a".to_string(),
+            FileDto {
+                id: "a".to_string(),
+                file_name: "a.png".to_string(),
+                size: 5,
+                file_type: "image/png".to_string(),
+                sha256: None,
+                preview: Some("hello".to_string()),
+                metadata: None,
+            },
+        );
+        assert_eq!(extract_embedded_text_message(&files), None);
+
+        // Multiple files: not a text message even if all are text.
+        let mut files = HashMap::new();
+        for k in ["a", "b"] {
+            files.insert(
+                k.to_string(),
+                FileDto {
+                    id: k.to_string(),
+                    file_name: format!("{k}.txt"),
+                    size: 1,
+                    file_type: "text/plain".to_string(),
+                    sha256: None,
+                    preview: Some("hi".to_string()),
+                    metadata: None,
+                },
+            );
+        }
+        assert_eq!(extract_embedded_text_message(&files), None);
+    }
+
+    #[test]
+    fn validate_relative_file_name_accepts_safe_names() {
+        assert!(validate_relative_file_name("file.txt").is_ok());
+        assert!(validate_relative_file_name("nested/file.txt").is_ok());
+        assert!(validate_relative_file_name("a/b/c.txt").is_ok());
+        assert!(validate_relative_file_name("file with spaces.txt").is_ok());
+    }
+
+    #[test]
+    fn validate_relative_file_name_rejects_absolute_paths() {
+        assert!(validate_relative_file_name("/etc/passwd").is_err());
+        assert!(validate_relative_file_name("/file.txt").is_err());
+    }
+
+    #[test]
+    fn validate_relative_file_name_rejects_parent_traversal() {
+        assert!(validate_relative_file_name("../escape.txt").is_err());
+        assert!(validate_relative_file_name("nested/../escape.txt").is_err());
+        assert!(validate_relative_file_name("..").is_err());
+    }
+
+    #[test]
+    fn parse_prepare_upload_rejects_empty_body() {
+        let err = parse_prepare_upload_request("").expect_err("should fail");
+        assert!(err.to_string().contains("json error"));
+    }
+
+    #[test]
+    fn parse_prepare_upload_rejects_missing_info() {
+        let json = r#"{"files": {}}"#;
+        let err = parse_prepare_upload_request(json).expect_err("should fail");
+        assert!(err.to_string().contains("info"));
+    }
+
+    #[test]
+    fn parse_prepare_upload_rejects_missing_files() {
+        let json = r#"{"info": {"alias": "Sender"}}"#;
+        let err = parse_prepare_upload_request(json).expect_err("should fail");
+        assert!(err.to_string().contains("files"));
+    }
+
+    #[test]
+    fn parse_prepare_upload_rejects_file_missing_name() {
+        let json = r#"{
+            "info": {"alias": "Sender"},
+            "files": {"f1": {"id": "f1", "size": 1, "fileType": "image"}}
+        }"#;
+        let err = parse_prepare_upload_request(json).expect_err("should fail");
+        assert!(err.to_string().contains("fileName"));
+    }
+
+    #[test]
+    fn parse_prepare_upload_rejects_file_missing_size() {
+        let json = r#"{
+            "info": {"alias": "Sender"},
+            "files": {"f1": {"id": "f1", "fileName": "x.png", "fileType": "image"}}
+        }"#;
+        let err = parse_prepare_upload_request(json).expect_err("should fail");
+        assert!(err.to_string().contains("size"));
+    }
+
+    #[test]
+    fn parse_prepare_upload_rejects_file_missing_type() {
+        let json = r#"{
+            "info": {"alias": "Sender"},
+            "files": {"f1": {"id": "f1", "fileName": "x.png", "size": 1}}
+        }"#;
+        let err = parse_prepare_upload_request(json).expect_err("should fail");
+        assert!(err.to_string().contains("fileType"));
+    }
+
+    #[test]
+    fn parse_prepare_upload_falls_back_to_snake_case_keys() {
+        // Some clients may send snake_case keys instead of camelCase.
+        let json = r#"{
+            "info": {"alias": "Sender", "version": "2.1"},
+            "files": {
+                "f1": {
+                    "id": "f1",
+                    "file_name": "x.png",
+                    "size": 1,
+                    "file_type": "image/png"
+                }
+            }
+        }"#;
+        let parsed = parse_prepare_upload_request(json).expect("parse");
+        assert_eq!(
+            parsed.files.get("f1").map(|f| f.file_name.clone()),
+            Some("x.png".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_prepare_upload_defaults_sender_version_to_v1() {
+        let json = r#"{
+            "info": {"alias": "Sender"},
+            "files": {"f1": {"id": "f1", "fileName": "x", "size": 1, "fileType": "image"}}
+        }"#;
+        let parsed = parse_prepare_upload_request(json).expect("parse");
+        assert_eq!(parsed.sender_version, "1.0");
+    }
+
+    #[test]
+    fn parse_prepare_upload_captures_explicit_sender_version() {
+        let json = r#"{
+            "info": {"alias": "Sender", "version": "2.1"},
+            "files": {"f1": {"id": "f1", "fileName": "x", "size": 1, "fileType": "image"}}
+        }"#;
+        let parsed = parse_prepare_upload_request(json).expect("parse");
+        assert_eq!(parsed.sender_version, "2.1");
+    }
+
+    #[test]
+    fn unique_path_returns_original_when_no_collision() {
+        let dir = std::env::temp_dir().join(format!("lsend-fresh-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let resolved = unique_path(&dir, "new.txt").expect("resolve");
+        assert_eq!(resolved, dir.join("new.txt"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unique_path_dedup_chain_within_same_dir() {
+        let dir = std::env::temp_dir().join(format!("lsend-chain-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), b"x").unwrap();
+        std::fs::write(dir.join("a (1).txt"), b"x").unwrap();
+        let resolved = unique_path(&dir, "a.txt").expect("resolve");
+        assert_eq!(resolved, dir.join("a (2).txt"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unique_path_dedup_preserves_extension() {
+        let dir = std::env::temp_dir().join(format!("lsend-ext-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("photo.png"), b"x").unwrap();
+        let resolved = unique_path(&dir, "photo.png").expect("resolve");
+        assert_eq!(resolved, dir.join("photo (1).png"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unique_path_handles_filename_without_extension() {
+        let dir = std::env::temp_dir().join(format!("lsend-noext-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("README"), b"x").unwrap();
+        let resolved = unique_path(&dir, "README").expect("resolve");
+        assert_eq!(resolved, dir.join("README (1)"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unique_path_falls_back_to_uuid_suffix_when_all_slots_taken() {
+        // Saturate the (1)..(999) range and verify the UUID fallback path runs.
+        let dir = std::env::temp_dir().join(format!("lsend-full-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("f.txt"), b"x").unwrap();
+        for i in 1..1000 {
+            std::fs::write(dir.join(format!("f ({i}).txt")), b"x").unwrap();
+        }
+        let resolved = unique_path(&dir, "f.txt").expect("resolve");
+        let name = resolved.file_name().unwrap().to_string_lossy().to_string();
+        assert!(name.starts_with("f-"), "got: {name}");
+        assert!(name.ends_with(".txt"), "got: {name}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

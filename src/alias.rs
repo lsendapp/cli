@@ -410,4 +410,104 @@ mod tests {
         assert!(result.path.exists());
         let _ = fs::remove_dir_all(dir);
     }
+
+    fn fresh_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("lsend-alias-{}-{}", tag, uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn generate_random_alias_respects_max_length() {
+        let alias = generate_random_alias_for_locale("en");
+        assert!(alias.len() <= MAX_ALIAS_LEN);
+    }
+
+    #[test]
+    fn generate_random_alias_uses_default_locale() {
+        // Without an explicit locale, generate_random_alias should still
+        // produce a non-empty string (uses system locale).
+        let a = generate_random_alias();
+        assert!(!a.is_empty());
+    }
+
+    #[test]
+    fn validate_alias_trims_whitespace() {
+        let s = validate_alias("  Hello  ").unwrap();
+        assert_eq!(s, "Hello");
+    }
+
+    #[test]
+    fn validate_alias_rejects_empty_after_trim() {
+        assert!(validate_alias("   ").is_err());
+    }
+
+    #[test]
+    fn validate_alias_rejects_too_long() {
+        let long = "a".repeat(MAX_ALIAS_LEN + 1);
+        assert!(validate_alias(&long).is_err());
+    }
+
+    #[test]
+    fn validate_alias_accepts_exact_max_length() {
+        let max = "a".repeat(MAX_ALIAS_LEN);
+        assert!(validate_alias(&max).is_ok());
+    }
+
+    #[test]
+    fn read_persisted_returns_none_when_missing() {
+        let dir = fresh_dir("missing");
+        assert!(read_persisted(&dir).unwrap().is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn set_persisted_persists_and_reports_previous() {
+        let dir = fresh_dir("setprev");
+        save(&dir, "Original").unwrap();
+        let result = set_persisted(&dir, "Updated").unwrap();
+        assert_eq!(result.previous.as_deref(), Some("Original"));
+        assert_eq!(result.alias, "Updated");
+        assert_eq!(read_persisted(&dir).unwrap().as_deref(), Some("Updated"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn set_persisted_rejects_empty_string() {
+        let dir = fresh_dir("setempty");
+        assert!(set_persisted(&dir, "").is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_locale_tag_handles_underscore() {
+        assert_eq!(resolve_locale_tag("en_US"), "en");
+        assert_eq!(resolve_locale_tag("pt_BR"), "pt-BR");
+    }
+
+    #[test]
+    fn resolve_locale_tag_handles_legacy_modifier() {
+        assert_eq!(resolve_locale_tag("ca-ES-valencia"), "ca");
+    }
+
+    #[test]
+    fn resolve_locale_tag_passes_through_exact_match() {
+        assert_eq!(resolve_locale_tag("de"), "de");
+        assert_eq!(resolve_locale_tag("zh-CN"), "zh-CN");
+    }
+
+    #[test]
+    fn resolve_locale_tag_falls_back_to_en_for_unknown() {
+        assert_eq!(resolve_locale_tag("xx"), "en");
+        assert_eq!(resolve_locale_tag("klingon"), "en");
+    }
+
+    #[test]
+    fn alias_path_lives_inside_config_dir() {
+        let dir = fresh_dir("path");
+        let p = alias_path(&dir);
+        assert_eq!(p.parent().unwrap(), dir);
+        assert_eq!(p.file_name().unwrap(), "alias.txt");
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

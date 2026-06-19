@@ -79,4 +79,84 @@ mod tests {
 
         let _ = fs::remove_dir_all(dir);
     }
+
+    fn fresh_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("lsend-rp-{}-{}", tag, uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn empty_cli_pin_is_rejected() {
+        let dir = fresh_dir("empty");
+        let err = resolve(&dir, Some("".to_string())).expect_err("empty PIN");
+        assert!(err.to_string().contains("must not be empty"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn whitespace_cli_pin_is_trimmed() {
+        let dir = fresh_dir("trim");
+        let pin = resolve(&dir, Some("  123456  ".to_string())).unwrap();
+        assert_eq!(pin.as_deref(), Some("123456"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_persisted_file_treated_as_absent() {
+        let dir = fresh_dir("emptyfile");
+        persist(&dir, "").unwrap();
+        // Falls through to env. Ensure no env is set for this test, then we
+        // expect None.
+        let prior = std::env::var("LSEND_RECEIVE_PIN").ok();
+        // SAFETY: serial test
+        unsafe { std::env::remove_var("LSEND_RECEIVE_PIN") };
+        let pin = resolve(&dir, None).unwrap();
+        assert_eq!(pin, None);
+        if let Some(v) = prior {
+            unsafe { std::env::set_var("LSEND_RECEIVE_PIN", v) };
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn env_fallback_when_no_file_and_no_cli() {
+        let dir = fresh_dir("env");
+        let prior = std::env::var("LSEND_RECEIVE_PIN").ok();
+        unsafe { std::env::set_var("LSEND_RECEIVE_PIN", "987654") };
+        let pin = resolve(&dir, None).unwrap();
+        assert_eq!(pin.as_deref(), Some("987654"));
+        if let Some(v) = prior {
+            unsafe { std::env::set_var("LSEND_RECEIVE_PIN", v) };
+        } else {
+            unsafe { std::env::remove_var("LSEND_RECEIVE_PIN") };
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn env_empty_value_ignored() {
+        let dir = fresh_dir("envempty");
+        let prior = std::env::var("LSEND_RECEIVE_PIN").ok();
+        unsafe { std::env::set_var("LSEND_RECEIVE_PIN", "   ") };
+        let pin = resolve(&dir, None).unwrap();
+        assert_eq!(pin, None);
+        if let Some(v) = prior {
+            unsafe { std::env::set_var("LSEND_RECEIVE_PIN", v) };
+        } else {
+            unsafe { std::env::remove_var("LSEND_RECEIVE_PIN") };
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cli_pin_overrides_persisted() {
+        let dir = fresh_dir("override");
+        persist(&dir, "old-pin").unwrap();
+        let pin = resolve(&dir, Some("new-pin".to_string())).unwrap();
+        assert_eq!(pin.as_deref(), Some("new-pin"));
+        // The CLI value is persisted and replaces the old one.
+        assert_eq!(load_persisted(&dir).unwrap().as_deref(), Some("new-pin"));
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

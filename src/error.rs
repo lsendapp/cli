@@ -140,4 +140,94 @@ mod tests {
         assert!(hint.contains("Reuse an existing receiver"));
         assert!(hint.contains("Avoid alternate `--port`"));
     }
+
+    #[test]
+    fn exit_codes_match_documented_table() {
+        assert_eq!(CliError::PortInUse { port: 1 }.exit_code(), 3);
+        assert_eq!(CliError::TargetNotFound { target: "x".into() }.exit_code(), 2);
+        assert_eq!(CliError::NoFiles.exit_code(), 2);
+        assert_eq!(CliError::InvalidAlias { reason: "x".into() }.exit_code(), 2);
+        assert_eq!(CliError::Other("x".into()).exit_code(), 1);
+    }
+
+    #[test]
+    fn code_constants_match_documented_strings() {
+        assert_eq!(CliError::PortInUse { port: 1 }.code(), "port_in_use");
+        assert_eq!(CliError::TargetNotFound { target: "x".into() }.code(), "target_not_found");
+        assert_eq!(CliError::NoFiles.code(), "no_files");
+        assert_eq!(CliError::InvalidAlias { reason: "x".into() }.code(), "invalid_alias");
+        assert_eq!(CliError::Other("x".into()).code(), "error");
+    }
+
+    #[test]
+    fn from_anyhow_classifies_target_not_found() {
+        let err = CliError::from_anyhow(anyhow::anyhow!("No device found with alias \"Bob\""));
+        match err {
+            CliError::TargetNotFound { target } => assert_eq!(target, "Bob"),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_anyhow_classifies_no_files() {
+        let err = CliError::from_anyhow(anyhow::anyhow!("No files to send"));
+        assert!(matches!(err, CliError::NoFiles));
+    }
+
+    #[test]
+    fn from_anyhow_classifies_invalid_alias() {
+        let err = CliError::from_anyhow(anyhow::anyhow!("Alias must not be empty"));
+        match err {
+            CliError::InvalidAlias { reason } => assert!(reason.contains("empty")),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_anyhow_passthrough_preserves_inner_cli_error() {
+        let inner = CliError::NoFiles;
+        let any: anyhow::Error = inner.clone().into();
+        let back = CliError::from_anyhow(any);
+        assert!(matches!(back, CliError::NoFiles));
+    }
+
+    #[test]
+    fn from_anyhow_classifies_bind_on_default_port() {
+        // "Address already in use" wins over port parsing; the parser will
+        // pick up the os-error number "48" so verify the structured variant.
+        let err = CliError::from_anyhow(anyhow::anyhow!("Address already in use (os error 48)"));
+        match err {
+            CliError::PortInUse { .. } => {}
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_anyhow_falls_back_to_other() {
+        let err = CliError::from_anyhow(anyhow::anyhow!("something else went wrong"));
+        match err {
+            CliError::Other(s) => assert_eq!(s, "something else went wrong"),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_port_extracts_digit_token() {
+        // The parser splits on whitespace and finds the first token that
+        // consists entirely of digits.
+        assert_eq!(parse_port_from_message("error 48"), Some(48));
+        assert_eq!(parse_port_from_message("no port here"), None);
+    }
+
+    #[test]
+    fn target_not_found_hint_suggests_scan() {
+        let err = CliError::TargetNotFound { target: "x".into() };
+        let hint = err.hint().unwrap();
+        assert!(hint.contains("scan"));
+    }
+
+    #[test]
+    fn other_error_has_no_hint() {
+        assert!(CliError::Other("x".into()).hint().is_none());
+    }
 }

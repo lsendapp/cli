@@ -196,3 +196,114 @@ impl RegisterCompat {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AppConfig;
+    use crate::identity::Identity;
+
+    fn dummy_state() -> DiscoveryServerState {
+        let dir = std::env::temp_dir().join(format!("lsend-scan-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = AppConfig::new(None, 53317, true, None).unwrap();
+        let identity = Identity {
+            cert_pem: String::new(),
+            key_pem: String::new(),
+            fingerprint: "abc123".to_string(),
+        };
+        let devices = Arc::new(Mutex::new(HashMap::new()));
+        std::fs::remove_dir_all(&dir).ok();
+        DiscoveryServerState {
+            config,
+            identity,
+            devices,
+        }
+    }
+
+    #[test]
+    fn info_response_uses_lowercase_headless_device_type() {
+        let state = dummy_state();
+        let resp = info_response(&state);
+        let json = serde_json::to_string(&resp).expect("serialize");
+        // deviceType should be lowercase to match the official client and the
+        // protocol spec.
+        assert!(json.contains("\"deviceType\":\"headless\""), "got: {json}");
+        assert!(json.contains("\"alias\":"));
+        assert!(json.contains("\"version\":\"2.1\""));
+        assert!(json.contains("\"fingerprint\":\"abc123\""));
+        assert!(json.contains("\"download\":false"));
+        assert!(!json.contains("deviceType\":\"HEADLESS\""));
+    }
+
+    #[test]
+    fn register_compat_prefers_fingerprint_over_legacy_token() {
+        let v2 = RegisterCompat {
+            alias: "a".into(),
+            version: Some("2.1".into()),
+            device_model: None,
+            device_type: None,
+            fingerprint: "fingerprint-value".into(),
+            token: String::new(),
+            port: Some(53317),
+            protocol: Some("https".into()),
+        };
+        assert_eq!(v2.fingerprint(), "fingerprint-value");
+
+        let v1 = RegisterCompat {
+            alias: "a".into(),
+            version: None,
+            device_model: None,
+            device_type: None,
+            fingerprint: String::new(),
+            token: "legacy-token".into(),
+            port: Some(53317),
+            protocol: Some("http".into()),
+        };
+        assert_eq!(v1.fingerprint(), "legacy-token");
+    }
+
+    #[test]
+    fn register_compat_uses_empty_when_neither_field_present() {
+        let c = RegisterCompat {
+            alias: "a".into(),
+            version: None,
+            device_model: None,
+            device_type: None,
+            fingerprint: String::new(),
+            token: String::new(),
+            port: None,
+            protocol: None,
+        };
+        assert_eq!(c.fingerprint(), "");
+    }
+
+    #[test]
+    fn register_compat_parses_v2_payload() {
+        let json = r#"{
+            "alias": "Sender",
+            "version": "2.1",
+            "deviceModel": "iPhone",
+            "deviceType": "mobile",
+            "fingerprint": "abc",
+            "port": 53317,
+            "protocol": "https"
+        }"#;
+        let parsed: RegisterCompat = serde_json::from_str(json).expect("parse");
+        assert_eq!(parsed.alias, "Sender");
+        assert_eq!(parsed.port, Some(53317));
+        assert_eq!(parsed.protocol.as_deref(), Some("https"));
+    }
+
+    #[test]
+    fn register_compat_parses_v1_legacy_payload() {
+        let json = r#"{
+            "alias": "Sender",
+            "token": "legacy-fp",
+            "port": 53317,
+            "protocol": "http"
+        }"#;
+        let parsed: RegisterCompat = serde_json::from_str(json).expect("parse");
+        assert_eq!(parsed.fingerprint(), "legacy-fp");
+    }
+}

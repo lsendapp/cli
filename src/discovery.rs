@@ -556,4 +556,141 @@ mod tests {
         assert_eq!(msg.device_type.as_deref(), Some("desktop"));
         assert!(msg.is_announce());
     }
+
+    #[test]
+    fn is_announce_falls_back_to_legacy_announcement_field() {
+        let mut msg = MulticastMessageCompat {
+            alias: "x".into(),
+            version: Some("1.0".into()),
+            device_model: None,
+            device_type: None,
+            fingerprint: "f".into(),
+            port: Some(53317),
+            protocol: None,
+            download: false,
+            announce: false,
+            announcement: true,
+        };
+        assert!(msg.is_announce());
+        msg.announce = true;
+        msg.announcement = false;
+        assert!(msg.is_announce());
+        msg.announce = false;
+        msg.announcement = false;
+        assert!(!msg.is_announce());
+    }
+
+    #[test]
+    fn multicast_message_roundtrips_with_both_announce_fields() {
+        let msg = MulticastMessageCompat {
+            alias: "x".into(),
+            version: Some("2.1".into()),
+            device_model: None,
+            device_type: Some("headless".to_string()),
+            fingerprint: "f".into(),
+            port: Some(53317),
+            protocol: Some(ProtocolTypeV2::Https),
+            download: false,
+            announce: true,
+            announcement: true,
+        };
+        let json = serde_json::to_string(&msg).expect("serialize");
+        // Both v1 and v2 announce fields are emitted for compat.
+        assert!(json.contains("\"announce\":true"));
+        assert!(json.contains("\"announcement\":true"));
+    }
+
+    #[test]
+    fn looks_like_ip_accepts_v4_and_v6() {
+        assert!(looks_like_ip("192.168.1.1"));
+        assert!(looks_like_ip("10.0.0.1"));
+        assert!(looks_like_ip("::1"));
+        assert!(looks_like_ip("2001:db8::1"));
+    }
+
+    #[test]
+    fn looks_like_ip_rejects_hostnames() {
+        assert!(!looks_like_ip(""));
+        assert!(!looks_like_ip("localhost"));
+        assert!(!looks_like_ip("Bob's iPhone"));
+        assert!(!looks_like_ip("192.168.1"));
+        assert!(!looks_like_ip("999.999.999.999"));
+    }
+
+    #[test]
+    fn message_to_device_falls_back_on_missing_fields() {
+        let msg = MulticastMessageCompat {
+            alias: "Peer".into(),
+            version: None,
+            device_model: None,
+            device_type: None,
+            fingerprint: "f".into(),
+            port: None,
+            protocol: None,
+            download: true,
+            announce: true,
+            announcement: true,
+        };
+        let device = message_to_device(
+            &msg,
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
+            53317,
+            true,
+        );
+        assert_eq!(device.alias, "Peer");
+        assert_eq!(device.ip, "10.0.0.1");
+        // Fallback port and https preference.
+        assert_eq!(device.port, 53317);
+        assert!(device.https);
+        // device_type None → not populated (callers may default to desktop).
+        assert!(device.device_type.is_none());
+    }
+
+    #[test]
+    fn message_to_device_uses_provided_https_when_protocol_missing() {
+        let msg = MulticastMessageCompat {
+            alias: "Peer".into(),
+            version: Some("2.1".into()),
+            device_model: None,
+            device_type: Some("mobile".to_string()),
+            fingerprint: "f".into(),
+            port: Some(6000),
+            protocol: None,
+            download: false,
+            announce: true,
+            announcement: true,
+        };
+        let device = message_to_device(
+            &msg,
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
+            53317,
+            false,
+        );
+        // Uses protocol from message when present; falls back to caller hint.
+        assert_eq!(device.port, 6000);
+        assert!(!device.https);
+        // device_type should be parsed.
+        let dt = device.device_type.unwrap();
+        use localsend::model::discovery::DeviceType;
+        assert_eq!(dt, DeviceType::Mobile);
+    }
+
+    #[test]
+    fn discovered_device_display_label_includes_protocol_and_endpoint() {
+        let device = DiscoveredDevice {
+            alias: "Bob".into(),
+            ip: "10.0.0.5".into(),
+            port: 53317,
+            fingerprint: "f".into(),
+            https: true,
+            version: "2.1".into(),
+            device_type: None,
+            device_model: None,
+        };
+        let label = device.display_label();
+        assert!(label.contains("Bob"));
+        assert!(label.contains("https://"));
+        assert!(label.contains("10.0.0.5"));
+        assert!(label.contains("53317"));
+    }
 }

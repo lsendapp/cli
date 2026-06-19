@@ -108,4 +108,60 @@ mod tests {
         // Unknown OS values get title-cased as a fallback.
         assert_eq!(os_display_name_for("plan9"), "Plan9");
     }
+
+    #[test]
+    fn os_display_name_empty_string_is_empty() {
+        assert_eq!(os_display_name_for(""), "");
+    }
+
+    #[test]
+    fn parse_device_type_accepts_lowercase() {
+        use localsend::model::discovery::DeviceType;
+        assert_eq!(parse_device_type("mobile"), Some(DeviceType::Mobile));
+        assert_eq!(parse_device_type("desktop"), Some(DeviceType::Desktop));
+        assert_eq!(parse_device_type("web"), Some(DeviceType::Web));
+        assert_eq!(parse_device_type("headless"), Some(DeviceType::Headless));
+        assert_eq!(parse_device_type("server"), Some(DeviceType::Server));
+    }
+
+    #[test]
+    fn parse_device_type_is_case_insensitive() {
+        use localsend::model::discovery::DeviceType;
+        assert_eq!(parse_device_type("MOBILE"), Some(DeviceType::Mobile));
+        assert_eq!(parse_device_type("Desktop"), Some(DeviceType::Desktop));
+    }
+
+    #[test]
+    fn parse_device_type_rejects_unknown() {
+        assert_eq!(parse_device_type(""), None);
+        assert_eq!(parse_device_type("smartwatch"), None);
+        assert_eq!(parse_device_type("unknown"), None);
+    }
+
+    #[test]
+    fn random_fingerprint_is_uuidv4_no_hyphens() {
+        let f = random_fingerprint();
+        assert_eq!(f.len(), 32);
+        assert!(f.chars().all(|c| c.is_ascii_hexdigit()));
+        // No hyphens (stripped UUID)
+        assert!(!f.contains('-'));
+    }
+
+    #[test]
+    fn random_fingerprint_is_unique_across_calls() {
+        let a = random_fingerprint();
+        let b = random_fingerprint();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn fingerprint_from_cert_pem_is_stable_hex_sha256() {
+        // Build a minimal self-signed cert via rcgen and verify the helper
+        // returns 64 hex chars (SHA-256 of the DER bytes).
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let pem = cert.cert.pem();
+        let fp = fingerprint_from_cert_pem(&pem).unwrap();
+        assert_eq!(fp.len(), 64);
+        assert!(fp.chars().all(|c| c.is_ascii_hexdigit()));
+    }
 }

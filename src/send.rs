@@ -460,4 +460,84 @@ mod tests {
         assert_eq!(file.file_type, "text/plain");
         assert_eq!(file.in_memory_preview().as_deref(), Some("hello"));
     }
+
+    #[test]
+    fn text_file_message_returns_full_text() {
+        let file = local_file_from_bytes(b"hello world".to_vec(), "inline").unwrap();
+        assert_eq!(file.message_text(), "hello world");
+    }
+
+    #[test]
+    fn text_file_size_matches_byte_length() {
+        let file = local_file_from_bytes(b"\x00\x01\x02".to_vec(), "x").unwrap();
+        assert_eq!(file.size, 3);
+    }
+
+    #[test]
+    fn local_file_from_path_captures_size_and_mime() {
+        let dir = std::env::temp_dir().join(format!("lsend-send-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("hello.txt");
+        std::fs::write(&path, b"hello").unwrap();
+        let file = local_file_from_path(&path, "hello.txt").unwrap();
+        assert_eq!(file.file_name, "hello.txt");
+        assert_eq!(file.size, 5);
+        // Mime should be a string starting with "text/" for a .txt file.
+        assert!(file.file_type.starts_with("text/"), "got: {}", file.file_type);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn collect_files_reads_nested_directory() {
+        let dir = std::env::temp_dir().join(format!("lsend-collect-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("a/b")).unwrap();
+        std::fs::write(dir.join("a/top.txt"), b"x").unwrap();
+        std::fs::write(dir.join("a/b/nested.txt"), b"y").unwrap();
+
+        let files = collect_files(&[dir.to_string_lossy().to_string()]).await.unwrap();
+        assert_eq!(files.len(), 2);
+        let names: Vec<_> = files.iter().map(|f| f.file_name.clone()).collect();
+        // Names preserve relative paths from the root argument.
+        assert!(names.iter().any(|n| n == "a/top.txt"), "names: {names:?}");
+        assert!(
+            names.iter().any(|n| n == "a/b/nested.txt"),
+            "names: {names:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn collect_files_errors_on_missing_path() {
+        let result = collect_files(&["/nonexistent/lsend/path/xyz".to_string()]).await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn is_message_send_classifies_each_mode() {
+        assert!(is_message_send(true, false, false));
+        assert!(is_message_send(false, true, false));
+        assert!(is_message_send(false, false, true));
+        assert!(is_message_send(false, true, true));
+        // Only "no mode" is a file send.
+        assert!(!is_message_send(false, false, false));
+    }
+
+    #[test]
+    fn local_file_display_source_for_memory() {
+        let file = local_file_from_bytes(b"x".to_vec(), "stdin").unwrap();
+        let display = file.display_source();
+        assert!(display.contains("stdin") || !display.is_empty());
+    }
+
+    #[test]
+    fn local_file_display_source_for_path() {
+        let dir = std::env::temp_dir().join(format!("lsend-disp-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("foo.txt");
+        std::fs::write(&path, b"x").unwrap();
+        let file = local_file_from_path(&path, "foo.txt").unwrap();
+        assert_eq!(file.display_source(), path.display().to_string());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

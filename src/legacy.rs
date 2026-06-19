@@ -159,4 +159,35 @@ mod tests {
         assert_eq!(info.alias, "Happy Orange");
         assert_eq!(info.device_type.as_deref(), Some("desktop"));
     }
+
+    #[test]
+    fn subnet_hosts_excludes_self_and_returns_253() {
+        let hosts = subnet_hosts(std::net::Ipv4Addr::new(192, 168, 1, 50));
+        assert_eq!(hosts.len(), 253);
+        assert!(!hosts.contains(&"192.168.1.50".to_string()));
+        assert!(hosts.contains(&"192.168.1.1".to_string()));
+        assert!(hosts.contains(&"192.168.1.254".to_string()));
+        assert!(!hosts.contains(&"192.168.1.0".to_string()));
+        assert!(!hosts.contains(&"192.168.1.255".to_string()));
+    }
+
+    #[test]
+    fn subnet_hosts_when_iface_is_first_host_skips_to_2() {
+        // 10.0.0.1 is excluded; first generated host is 10.0.0.2.
+        let hosts = subnet_hosts(std::net::Ipv4Addr::new(10, 0, 0, 1));
+        assert_eq!(hosts.first(), Some(&"10.0.0.2".to_string()));
+        assert_eq!(hosts.last(), Some(&"10.0.0.254".to_string()));
+    }
+
+    #[test]
+    fn info_compat_defaults_optional_fields() {
+        // fingerprint is required by the schema; only optional fields default.
+        let json = r#"{"alias":"X","fingerprint":"fp"}"#;
+        let info: InfoResponseCompat = serde_json::from_str(json).expect("parse");
+        assert_eq!(info.alias, "X");
+        assert_eq!(info.fingerprint, "fp");
+        assert!(info.version.is_none());
+        assert!(info.device_model.is_none());
+        assert!(info.device_type.is_none());
+    }
 }

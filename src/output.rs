@@ -331,4 +331,179 @@ mod tests {
         assert!(json.contains("\"text\":\"hello\""));
         assert!(!json.contains("\"files\""));
     }
+
+    fn peer() -> DeviceJson {
+        DeviceJson {
+            alias: "Peer".to_string(),
+            ip: "192.168.1.10".to_string(),
+            port: 53317,
+            fingerprint: String::new(),
+            https: true,
+            version: "2.1".to_string(),
+            device_type: None,
+            device_model: None,
+        }
+    }
+
+    #[test]
+    fn receive_event_ready_serializes_with_required_fields() {
+        let event = ReceiveEventJson::Ready {
+            alias: "Laptop".to_string(),
+            port: 53317,
+            https: true,
+            receive_dir: "/tmp/inbox".to_string(),
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        assert!(json.contains("\"event\":\"ready\""));
+        assert!(json.contains("\"alias\":\"Laptop\""));
+        assert!(json.contains("\"port\":53317"));
+        assert!(json.contains("\"https\":true"));
+        assert!(json.contains("\"receive_dir\":\"/tmp/inbox\""));
+    }
+
+    #[test]
+    fn receive_event_transfer_started_serializes() {
+        let event = ReceiveEventJson::TransferStarted {
+            sender_alias: "iPhone".to_string(),
+            file_count: 3,
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        assert!(json.contains("\"event\":\"transfer_started\""));
+        assert!(json.contains("\"sender_alias\":\"iPhone\""));
+        assert!(json.contains("\"file_count\":3"));
+    }
+
+    #[test]
+    fn receive_event_file_saved_serializes() {
+        let event = ReceiveEventJson::FileSaved {
+            path: "/tmp/inbox/foo.txt".to_string(),
+            file_name: "foo.txt".to_string(),
+            size: 1024,
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        assert!(json.contains("\"event\":\"file_saved\""));
+        assert!(json.contains("\"path\":\"/tmp/inbox/foo.txt\""));
+        assert!(json.contains("\"file_name\":\"foo.txt\""));
+        assert!(json.contains("\"size\":1024"));
+    }
+
+    #[test]
+    fn receive_event_transfer_complete_serializes() {
+        let json = serde_json::to_string(&ReceiveEventJson::TransferComplete).expect("serialize");
+        assert_eq!(json, "{\"event\":\"transfer_complete\"}");
+    }
+
+    #[test]
+    fn receive_event_transfer_finished_with_errors_serializes() {
+        let json = serde_json::to_string(&ReceiveEventJson::TransferFinishedWithErrors)
+            .expect("serialize");
+        assert_eq!(json, "{\"event\":\"transfer_finished_with_errors\"}");
+    }
+
+    #[test]
+    fn receive_event_transfer_cancelled_serializes() {
+        let json = serde_json::to_string(&ReceiveEventJson::TransferCancelled).expect("serialize");
+        assert_eq!(json, "{\"event\":\"transfer_cancelled\"}");
+    }
+
+    #[test]
+    fn receive_event_shutdown_serializes() {
+        let json = serde_json::to_string(&ReceiveEventJson::Shutdown).expect("serialize");
+        assert_eq!(json, "{\"event\":\"shutdown\"}");
+    }
+
+    #[test]
+    fn device_json_omits_optional_fields_when_none() {
+        let device = DeviceJson {
+            alias: "x".into(),
+            ip: "1.2.3.4".into(),
+            port: 53317,
+            fingerprint: "abc".into(),
+            https: true,
+            version: "2.1".into(),
+            device_type: None,
+            device_model: None,
+        };
+        let json = serde_json::to_string(&device).expect("serialize");
+        assert!(!json.contains("device_type"));
+        assert!(!json.contains("device_model"));
+    }
+
+    #[test]
+    fn device_json_includes_optional_fields_when_set() {
+        use localsend::model::discovery::DeviceType;
+        let device = DeviceJson {
+            alias: "x".into(),
+            ip: "1.2.3.4".into(),
+            port: 53317,
+            fingerprint: "abc".into(),
+            https: true,
+            version: "2.1".into(),
+            device_type: Some(device_type_label(&DeviceType::Mobile)),
+            device_model: Some("iPhone".into()),
+        };
+        let json = serde_json::to_string(&device).expect("serialize");
+        assert!(json.contains("\"device_type\":\"mobile\""));
+        assert!(json.contains("\"device_model\":\"iPhone\""));
+    }
+
+    #[test]
+    fn device_type_label_covers_all_variants() {
+        use localsend::model::discovery::DeviceType;
+        assert_eq!(device_type_label(&DeviceType::Mobile), "mobile");
+        assert_eq!(device_type_label(&DeviceType::Desktop), "desktop");
+        assert_eq!(device_type_label(&DeviceType::Web), "web");
+        assert_eq!(device_type_label(&DeviceType::Headless), "headless");
+        assert_eq!(device_type_label(&DeviceType::Server), "server");
+    }
+
+    #[test]
+    fn scan_result_serializes_with_command_ok_timeout() {
+        let result = ScanResult {
+            command: "scan",
+            ok: true,
+            timeout_ms: 5000,
+            devices: vec![peer()],
+        };
+        let json = serde_json::to_string(&result).expect("serialize");
+        assert!(json.starts_with("{\"command\":\"scan\""));
+        assert!(json.contains("\"ok\":true"));
+        assert!(json.contains("\"timeout_ms\":5000"));
+        assert!(json.contains("\"devices\""));
+    }
+
+    #[test]
+    fn send_file_result_serializes_status() {
+        let r = SendFileResult {
+            name: "a.txt".into(),
+            path: "/tmp/a.txt".into(),
+            size: 10,
+            status: "skipped",
+        };
+        let json = serde_json::to_string(&r).expect("serialize");
+        assert!(json.contains("\"status\":\"skipped\""));
+        assert!(json.contains("\"size\":10"));
+    }
+
+    #[test]
+    fn output_options_json_flag_forces_json() {
+        let opts = OutputOptions::new(true, false);
+        assert!(opts.is_json());
+        // --quiet is implied by --json
+        assert!(!opts.show_human_progress());
+    }
+
+    #[test]
+    fn output_options_human_with_quiet() {
+        let opts = OutputOptions::new(false, true);
+        assert!(!opts.is_json());
+        assert!(!opts.show_human_progress());
+    }
+
+    #[test]
+    fn output_options_human_verbose() {
+        let opts = OutputOptions::new(false, false);
+        assert!(!opts.is_json());
+        assert!(opts.show_human_progress());
+    }
 }
