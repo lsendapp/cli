@@ -71,4 +71,26 @@ mod tests {
             Some("hello")
         );
     }
+
+    #[test]
+    fn text_preview_returns_none_for_empty_input() {
+        assert_eq!(text_preview(b""), None);
+    }
+
+    #[test]
+    fn read_message_text_round_trips_bytes() {
+        let bytes = read_message_text("hello world").unwrap();
+        assert_eq!(bytes, b"hello world".to_vec());
+    }
+
+    #[test]
+    fn text_file_name_is_uuidv4_with_txt_suffix() {
+        let name = text_file_name();
+        // Format: "<uuid>.txt" — UUIDv4 is 36 chars, plus ".txt" = 40.
+        assert_eq!(name.len(), 40);
+        assert!(name.ends_with(".txt"));
+        // The UUID part should parse as a valid UUID.
+        let uuid_str = name.trim_end_matches(".txt");
+        uuid::Uuid::parse_str(uuid_str).expect("valid uuid");
+    }
 }

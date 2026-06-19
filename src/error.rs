@@ -230,4 +230,36 @@ mod tests {
     fn other_error_has_no_hint() {
         assert!(CliError::Other("x".into()).hint().is_none());
     }
+
+    #[test]
+    fn from_anyhow_classifies_discovery_server_bind_error() {
+        let err = CliError::from_anyhow(anyhow::anyhow!(
+            "Could not start discovery HTTP server on port 53317: bind: address already in use"
+        ));
+        match err {
+            CliError::PortInUse { port } => assert_eq!(port, 53317),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_anyhow_classifies_generic_bind_with_port_in_message() {
+        let err = CliError::from_anyhow(anyhow::anyhow!(
+            "failed to bind to 0.0.0.0:6000"
+        ));
+        // The function matches "bind" + "53317" together; without 53317 it
+        // falls back to Other. Verify the fallback path.
+        assert!(matches!(err, CliError::Other(_)));
+    }
+
+    #[test]
+    fn from_anyhow_classifies_already_in_use_with_port() {
+        let err = CliError::from_anyhow(anyhow::anyhow!(
+            "could not bind listener: address already in use (port 53317)"
+        ));
+        match err {
+            CliError::PortInUse { port } => assert_eq!(port, 53317),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
 }

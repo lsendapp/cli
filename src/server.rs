@@ -1421,3 +1421,642 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+#[cfg(test)]
+mod integration_tests {
+    //! End-to-end tests that exercise the full axum router via
+    //! `tower::ServiceExt::oneshot`. These complement the unit tests above by
+    //! verifying the actual HTTP-level behavior (status codes, JSON shape,
+    //! PIN enforcement, session lifecycle, file persistence).
+
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    fn make_state(receive_dir: &std::path::Path, pin: Option<String>) -> ServerState {
+        let cfg = AppConfig::new(Some("Tester".into()), 53317, true, Some(receive_dir.to_path_buf()))
+            .expect("config");
+        let identity = Identity {
+            cert_pem: String::new(),
+            key_pem: String::new(),
+            fingerprint: "test-fp".to_string(),
+        };
+        ServerState::new(cfg, identity, pin, OutputMode::Json, false, None)
+    }
+
+    fn with_connect_info(req: Request<Body>, addr: SocketAddr) -> Request<Body> {
+        let (mut parts, body) = req.into_parts();
+        parts.extensions.insert(ConnectInfo(addr));
+        Request::from_parts(parts, body)
+    }
+
+    async fn call(
+        state: &ServerState,
+        req: Request<Body>,
+        addr: SocketAddr,
+    ) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+        let app = build_router(state.clone());
+        let resp = app
+            .oneshot(with_connect_info(req, addr))
+            .await
+            .expect("router responds");
+        let (parts, body) = resp.into_parts();
+        let bytes = body.collect().await.expect("collect body").to_bytes();
+        (parts.status, parts.headers, bytes.to_vec())
+    }
+
+    fn json_request(method: &str, uri: &str, body: Option<&str>) -> Request<Body> {
+        let body = body.unwrap_or("{}").to_string();
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .expect("build request")
+    }
+
+    fn raw_request(method: &str, uri: &str, body: Vec<u8>) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .expect("build request")
+    }
+
+    fn fresh_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "lsend-int-{}-{}",
+            tag,
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn peer_addr() -> SocketAddr {
+        SocketAddr::from(([10, 0, 0, 1], 53317))
+    }
+
+    fn make_prepare_body(version: &str, file_count: usize) -> String {
+        let files: String = (1..=file_count)
+            .map(|i| {
+                format!(
+                    r#""f{i}": {{"id":"f{i}","fileName":"a{}.bin","size":4,"fileType":"application/octet-stream"}}"#,
+                    i - 1
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            r#"{{"info":{{"alias":"Sender","version":"{version}","fingerprint":"sfp"}},"files":{{{files}}}}}"#
+        )
+    }
+
+    #[tokio::test]
+    async fn info_v1_returns_alias_version_and_lowercase_device_type() {
+        let dir = fresh_dir("info");
+        let state = make_state(&dir, None);
+        let (status, _, body) = call(
+            &state,
+            Request::builder()
+                .uri("/api/localsend/v1/info?fingerprint=other")
+                .body(Body::empty())
+                .unwrap(),
+            peer_addr(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["alias"], "Tester");
+        assert_eq!(json["version"], "2.1");
+        assert_eq!(json["deviceType"], "headless");
+        assert_eq!(json["fingerprint"], "test-fp");
+        assert_eq!(json["download"], false);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn info_v1_returns_412_for_self_fingerprint() {
+        let dir = fresh_dir("info-self");
+        let state = make_state(&dir, None);
+        let (status, _, body) = call(
+            &state,
+            Request::builder()
+                .uri("/api/localsend/v1/info?fingerprint=test-fp")
+                .body(Body::empty())
+                .unwrap(),
+            peer_addr(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["message"], "Self-discovered");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn register_v1_echoes_alias_and_fingerprint() {
+        let dir = fresh_dir("reg-v1");
+        let state = make_state(&dir, None);
+        let body = r#"{"alias":"Peer","fingerprint":"peer-fp","port":53317,"protocol":"http"}"#;
+        let (status, _, resp) = call(
+            &state,
+            json_request("POST", "/api/localsend/v1/register", Some(body)),
+            peer_addr(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+        assert_eq!(json["alias"], "Tester");
+        assert_eq!(json["deviceType"], "headless");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn register_v1_rejects_self_fingerprint() {
+        let dir = fresh_dir("reg-self");
+        let state = make_state(&dir, None);
+        let body = r#"{"alias":"Self","fingerprint":"test-fp"}"#;
+        let (status, _, _) = call(
+            &state,
+            json_request("POST", "/api/localsend/v1/register", Some(body)),
+            peer_addr(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn register_v1_rejects_missing_fingerprint() {
+        let dir = fresh_dir("reg-no-fp");
+        let state = make_state(&dir, None);
+        let body = r#"{"alias":"X"}"#;
+        let (status, _, _) = call(
+            &state,
+            json_request("POST", "/api/localsend/v1/register", Some(body)),
+            peer_addr(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn prepare_upload_v2_returns_session_id_and_tokens() {
+        let dir = fresh_dir("prep");
+        let state = make_state(&dir, None);
+        let body = make_prepare_body("2.1", 2);
+        let (status, _, resp) = call(
+            &state,
+            json_request("POST", "/api/localsend/v2/prepare-upload", Some(&body)),
+            peer_addr(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+        // sessionId is a UUIDv4.
+        let sid = json["sessionId"].as_str().expect("sessionId");
+        assert_eq!(sid.len(), 36);
+        // Two files accepted, both with tokens.
+        let files = json["files"].as_object().expect("files");
+        assert_eq!(files.len(), 2);
+        for (_, token) in files {
+            assert!(token.as_str().unwrap().len() == 36);
+        }
+        // A second prepare-upload should now be blocked (session in use).
+        let (status2, _, _) = call(
+            &state,
+            json_request("POST", "/api/localsend/v2/prepare-upload", Some(&body)),
+            peer_addr(),
+        )
+        .await;
+        assert_eq!(status2, StatusCode::CONFLICT);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn prepare_upload_v1_returns_legacy_file_map() {
+        let dir = fresh_dir("prep-v1");
+        let state = make_state(&dir, None);
+        let body = make_prepare_body("1.0", 1);
+        let (status, _, resp) = call(
+            &state,
+            json_request("POST", "/api/localsend/v1/send-request", Some(&body)),
+            peer_addr(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        // v1 response is a plain object {fileId: token} without sessionId.
+        let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+        assert!(json.get("sessionId").is_none());
+        let files = json.as_object().expect("map");
+        assert_eq!(files.len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn prepare_upload_rejects_empty_files() {
+        let dir = fresh_dir("prep-empty");
+        let state = make_state(&dir, None);
+        let body = r#"{"info":{"alias":"X"},"files":{}}"#;
+        let (status, _, _) = call(
+            &state,
+            json_request("POST", "/api/localsend/v2/prepare-upload", Some(body)),
+            peer_addr(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn prepare_upload_rejects_malformed_body() {
+        let dir = fresh_dir("prep-bad");
+        let state = make_state(&dir, None);
+        let (status, _, _) = call(
+            &state,
+            raw_request("POST", "/api/localsend/v2/prepare-upload", b"not json".to_vec()),
+            peer_addr(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn prepare_upload_returns_204_for_embedded_text_message() {
+        let dir = fresh_dir("prep-msg");
+        let state = make_state(&dir, None);
+        let body = r#"{
+            "info": {"alias": "X", "version": "2.1", "fingerprint": "sfp"},
+            "files": {
+                "f1": {
+                    "id": "f1",
+                    "fileName": "msg.txt",
+                    "size": 5,
+                    "fileType": "text/plain",
+                    "preview": "hello"
+                }
+            }
+        }"#;
+        let (status, _, _) = call(
+            &state,
+            json_request("POST", "/api/localsend/v2/prepare-upload", Some(body)),
+            peer_addr(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        // A follow-up prepare-upload from a different peer should succeed
+        // because the message path closes the session immediately.
+        let body2 = make_prepare_body("2.1", 1);
+        let (status2, _, _) = call(
+            &state,
+            json_request("POST", "/api/localsend/v2/prepare-upload", Some(&body2)),
+            peer_addr(),
+        )
+        .await;
+        assert_eq!(status2, StatusCode::OK);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn prepare_upload_requires_pin_when_set() {
+        let dir = fresh_dir("prep-pin");
+        let state = make_state(&dir, Some("123456".into()));
+        let body = make_prepare_body("2.1", 1);
+        // No PIN → 401
+        let (status, _, _) = call(
+            &state,
+            json_request("POST", "/api/localsend/v2/prepare-upload?pin=", Some(&body)),
+            peer_addr(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        // Correct PIN → 200
+        let (status, _, _) = call(
+            &state,
+            json_request("POST", "/api/localsend/v2/prepare-upload?pin=123456", Some(&body)),
+            peer_addr(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        // Wrong PIN → 401, then 429 after 3 attempts
+        for attempt in 0..2 {
+            let (status, _, _) = call(
+                &state,
+                json_request(
+                    "POST",
+                    "/api/localsend/v2/prepare-upload?pin=wrong",
+                    Some(&body),
+                ),
+                peer_addr(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "attempt {attempt}");
+        }
+        let (status, _, _) = call(
+            &state,
+            json_request("POST", "/api/localsend/v2/prepare-upload?pin=wrong", Some(&body)),
+            peer_addr(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn prepare_upload_pin_works_via_header_too() {
+        let dir = fresh_dir("prep-pin-hdr");
+        let state = make_state(&dir, Some("abcdef".into()));
+        let body = make_prepare_body("2.1", 1);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/localsend/v2/prepare-upload")
+            .header("content-type", "application/json")
+            .header("pin", "abcdef")
+            .body(Body::from(body))
+            .unwrap();
+        let (status, _, _) = call(&state, req, peer_addr()).await;
+        assert_eq!(status, StatusCode::OK);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn upload_v2_writes_file_to_receive_dir() {
+        let dir = fresh_dir("upload");
+        let state = make_state(&dir, None);
+        let body = make_prepare_body("2.1", 1);
+        let (_, _, resp) = call(
+            &state,
+            json_request("POST", "/api/localsend/v2/prepare-upload", Some(&body)),
+            peer_addr(),
+        )
+        .await;
+        let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+        let sid = json["sessionId"].as_str().unwrap().to_string();
+        let token = json["files"]["f1"].as_str().unwrap().to_string();
+
+        // Upload the actual file bytes.
+        let upload_uri = format!(
+            "/api/localsend/v2/upload?sessionId={}&fileId=f1&token={}",
+            sid, token
+        );
+        let req = Request::builder()
+            .method("POST")
+            .uri(&upload_uri)
+            .header("content-type", "application/octet-stream")
+            .body(Body::from(b"abcd".to_vec()))
+            .unwrap();
+        let (status, _, _) = call(&state, req, peer_addr()).await;
+        assert_eq!(status, StatusCode::OK);
+        // The file should now exist on disk.
+        let written = std::fs::read(dir.join("a0.bin")).expect("written");
+        assert_eq!(written, b"abcd");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn upload_v2_rejects_wrong_session_id() {
+        let dir = fresh_dir("upload-bad-sid");
+        let state = make_state(&dir, None);
+        let body = make_prepare_body("2.1", 1);
+        let (_, _, resp) = call(
+            &state,
+            json_request("POST", "/api/localsend/v2/prepare-upload", Some(&body)),
+            peer_addr(),
+        )
+        .await;
+        let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+        let token = json["files"]["f1"].as_str().unwrap().to_string();
+        let upload_uri = format!(
+            "/api/localsend/v2/upload?sessionId=wrong&fileId=f1&token={}",
+            token
+        );
+        let req = Request::builder()
+            .method("POST")
+            .uri(&upload_uri)
+            .body(Body::from(b"abcd".to_vec()))
+            .unwrap();
+        let (status, _, _) = call(&state, req, peer_addr()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn upload_v2_rejects_wrong_token() {
+        let dir = fresh_dir("upload-bad-tok");
+        let state = make_state(&dir, None);
+        let body = make_prepare_body("2.1", 1);
+        let (_, _, resp) = call(
+            &state,
+            json_request("POST", "/api/localsend/v2/prepare-upload", Some(&body)),
+            peer_addr(),
+        )
+        .await;
+        let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+        let sid = json["sessionId"].as_str().unwrap().to_string();
+        let upload_uri = format!(
+            "/api/localsend/v2/upload?sessionId={}&fileId=f1&token=wrong",
+            sid
+        );
+        let req = Request::builder()
+            .method("POST")
+            .uri(&upload_uri)
+            .body(Body::from(b"abcd".to_vec()))
+            .unwrap();
+        let (status, _, _) = call(&state, req, peer_addr()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn upload_v2_missing_parameters_returns_400() {
+        let dir = fresh_dir("upload-400");
+        let state = make_state(&dir, None);
+        // No sessionId, no fileId, no token → 400
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/localsend/v2/upload")
+            .body(Body::from(b"abcd".to_vec()))
+            .unwrap();
+        let (status, _, _) = call(&state, req, peer_addr()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn cancel_v2_succeeds_for_active_session() {
+        let dir = fresh_dir("cancel-ok");
+        let state = make_state(&dir, None);
+        // Establish a session.
+        let body = make_prepare_body("2.1", 1);
+        let (_, _, resp) = call(
+            &state,
+            json_request("POST", "/api/localsend/v2/prepare-upload", Some(&body)),
+            peer_addr(),
+        )
+        .await;
+        let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+        let sid = json["sessionId"].as_str().unwrap().to_string();
+        // Cancel from the same peer IP with the matching sessionId.
+        let (status, _, _) = call(
+            &state,
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/localsend/v2/cancel?sessionId={sid}"))
+                .body(Body::empty())
+                .unwrap(),
+            peer_addr(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        // A subsequent prepare-upload from the same peer should now succeed.
+        let body2 = make_prepare_body("2.1", 1);
+        let (status2, _, _) = call(
+            &state,
+            json_request("POST", "/api/localsend/v2/prepare-upload", Some(&body2)),
+            peer_addr(),
+        )
+        .await;
+        assert_eq!(status2, StatusCode::OK);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn cancel_v2_rejects_wrong_ip() {
+        let dir = fresh_dir("cancel-ip");
+        let state = make_state(&dir, None);
+        let body = make_prepare_body("2.1", 1);
+        let (_, _, resp) = call(
+            &state,
+            json_request("POST", "/api/localsend/v2/prepare-upload", Some(&body)),
+            peer_addr(),
+        )
+        .await;
+        let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+        let sid = json["sessionId"].as_str().unwrap().to_string();
+        // Cancel from a different IP → 403.
+        let other = SocketAddr::from(([10, 0, 0, 99], 12345));
+        let (status, _, _) = call(
+            &state,
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/localsend/v2/cancel?sessionId={sid}"))
+                .body(Body::empty())
+                .unwrap(),
+            other,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn cancel_v2_rejects_wrong_session_id() {
+        let dir = fresh_dir("cancel-sid");
+        let state = make_state(&dir, None);
+        let body = make_prepare_body("2.1", 1);
+        let (_, _, _) = call(
+            &state,
+            json_request("POST", "/api/localsend/v2/prepare-upload", Some(&body)),
+            peer_addr(),
+        )
+        .await;
+        let (status, _, _) = call(
+            &state,
+            Request::builder()
+                .method("POST")
+                .uri("/api/localsend/v2/cancel?sessionId=wrong")
+                .body(Body::empty())
+                .unwrap(),
+            peer_addr(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn cancel_returns_403_when_no_active_session() {
+        let dir = fresh_dir("cancel-none");
+        let state = make_state(&dir, None);
+        let (status, _, _) = call(
+            &state,
+            Request::builder()
+                .method("POST")
+                .uri("/api/localsend/v2/cancel?sessionId=anything")
+                .body(Body::empty())
+                .unwrap(),
+            peer_addr(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn pin_rate_limit_is_per_ip_and_independent() {
+        let dir = fresh_dir("pin-concurrent");
+        let state = make_state(&dir, Some("right".into()));
+        let body = make_prepare_body("2.1", 1);
+        let peer = peer_addr();
+        let other = SocketAddr::from(([10, 0, 0, 99], 53317));
+
+        // Peer A: 2 wrong attempts → both 401
+        for _ in 0..2 {
+            let (s, _, _) = call(
+                &state,
+                json_request(
+                    "POST",
+                    "/api/localsend/v2/prepare-upload?pin=wrong",
+                    Some(&body),
+                ),
+                peer,
+            )
+            .await;
+            assert_eq!(s, StatusCode::UNAUTHORIZED);
+        }
+        // Peer B (different IP) should NOT be affected by peer A's failures
+        // and gets 401 with the wrong PIN (its own count starts at 0).
+        let (s, _, _) = call(
+            &state,
+            json_request(
+                "POST",
+                "/api/localsend/v2/prepare-upload?pin=wrong",
+                Some(&body),
+            ),
+            other,
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+        // Peer A: 3rd wrong attempt triggers 429.
+        let (s, _, _) = call(
+            &state,
+            json_request(
+                "POST",
+                "/api/localsend/v2/prepare-upload?pin=wrong",
+                Some(&body),
+            ),
+            peer,
+        )
+        .await;
+        assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
+        // Peer A: even a CORRECT PIN is rejected with 429 after lockout.
+        let (s, _, _) = call(
+            &state,
+            json_request(
+                "POST",
+                "/api/localsend/v2/prepare-upload?pin=right",
+                Some(&body),
+            ),
+            peer,
+        )
+        .await;
+        assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

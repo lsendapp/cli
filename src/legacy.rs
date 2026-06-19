@@ -190,4 +190,41 @@ mod tests {
         assert!(info.device_model.is_none());
         assert!(info.device_type.is_none());
     }
+
+    #[test]
+    fn device_from_info_uses_provided_endpoint() {
+        let info = InfoResponseCompat {
+            alias: "Bob".into(),
+            version: Some("2.1".into()),
+            device_model: Some("iPhone".into()),
+            device_type: Some("mobile".into()),
+            fingerprint: "bob-fp".into(),
+        };
+        let device = device_from_info(info, "10.0.0.7", 12345, true);
+        assert_eq!(device.alias, "Bob");
+        assert_eq!(device.ip, "10.0.0.7");
+        assert_eq!(device.port, 12345);
+        assert!(device.https);
+        assert_eq!(device.fingerprint, "bob-fp");
+        assert_eq!(device.device_model.as_deref(), Some("iPhone"));
+        use localsend::model::discovery::DeviceType;
+        assert_eq!(device.device_type, Some(DeviceType::Mobile));
+    }
+
+    #[test]
+    fn device_from_info_falls_back_to_current_protocol_version() {
+        let info = InfoResponseCompat {
+            alias: "Old".into(),
+            version: None,
+            device_model: None,
+            device_type: None,
+            fingerprint: "old-fp".into(),
+        };
+        let device = device_from_info(info, "10.0.0.8", 53317, false);
+        // Missing version falls back to the current protocol version (2.1),
+        // not to the v1.0 fallback used by the Dart InfoDto helper.
+        assert_eq!(device.version, "2.1");
+        assert_eq!(device.device_type, None);
+        assert!(!device.https);
+    }
 }

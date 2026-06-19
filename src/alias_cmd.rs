@@ -131,3 +131,81 @@ fn fail(command: &'static str, output: OutputOptions, error: impl Into<anyhow::E
     }
     code
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::output::OutputMode;
+    use std::fs;
+
+    fn fresh_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("lsend-aliascmd-{}-{}", tag, uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn quiet_json() -> OutputOptions {
+        OutputOptions::new(true, false)
+    }
+
+    #[test]
+    fn run_show_creates_alias_and_returns_ok() {
+        let dir = fresh_dir("show");
+        let result = run_show(&dir, quiet_json());
+        assert!(result.is_ok(), "show failed: {:?}", result.err());
+        let persisted = fs::read_to_string(dir.join("alias.txt")).unwrap();
+        assert!(!persisted.trim().is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_show_reuses_existing_alias() {
+        let dir = fresh_dir("show-existing");
+        fs::write(dir.join("alias.txt"), "Existing Name\n").unwrap();
+        let result = run_show(&dir, quiet_json());
+        assert!(result.is_ok());
+        let persisted = fs::read_to_string(dir.join("alias.txt")).unwrap();
+        assert_eq!(persisted.trim(), "Existing Name");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_regenerate_overwrites_alias() {
+        let dir = fresh_dir("regen");
+        fs::write(dir.join("alias.txt"), "Old Name\n").unwrap();
+        let result = run_regenerate(&dir, Some("en"), quiet_json());
+        assert!(result.is_ok());
+        let persisted = fs::read_to_string(dir.join("alias.txt")).unwrap();
+        assert_ne!(persisted.trim(), "Old Name");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_set_persists_alias() {
+        let dir = fresh_dir("set");
+        let result = run_set(&dir, "My Laptop", quiet_json());
+        assert!(result.is_ok());
+        let persisted = fs::read_to_string(dir.join("alias.txt")).unwrap();
+        assert_eq!(persisted.trim(), "My Laptop");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_set_rejects_empty_with_invalid_alias_code() {
+        let dir = fresh_dir("set-empty");
+        let result = run_set(&dir, "   ", quiet_json());
+        // The function returns Err(invalid_alias exit code) on empty input.
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_set_rejects_too_long() {
+        let dir = fresh_dir("set-long");
+        let too_long = "a".repeat(256);
+        let result = run_set(&dir, &too_long, quiet_json());
+        assert!(result.is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
