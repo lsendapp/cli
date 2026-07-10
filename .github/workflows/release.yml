@@ -1,0 +1,185 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Apple silicon
+          - target: aarch64-apple-darwin
+            os: macos-14
+            archive: tar.gz
+            bin: lsend
+          # Apple Intel
+          - target: x86_64-apple-darwin
+            os: macos-14
+            archive: tar.gz
+            bin: lsend
+          # Linux x86_64 (musl for static binary, no glibc compat issues)
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-22.04
+            archive: tar.gz
+            bin: lsend
+          # Linux arm64 (musl)
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-22.04
+            archive: tar.gz
+            bin: lsend
+          # Windows x86_64
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+            archive: zip
+            bin: lsend.exe
+          # Windows arm64
+          - target: aarch64-pc-windows-msvc
+            os: windows-2022
+            archive: zip
+            bin: lsend.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            vendor/localsend-core -> target
+
+      - name: build (release, stripped)
+        run: cargo build --release --target ${{ matrix.target }} --locked
+        env:
+          # Strip debug info — halves binary size. CARGO_PROFILE_RELEASE_STRIP=symbols
+          # is honored by cargo 1.59+; combined with the linker's strip pass this
+          # yields a lean release binary.
+          CARGO_PROFILE_RELEASE_STRIP: symbols
+          CARGO_PROFILE_RELEASE_LTO: fat
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 1
+
+      - name: package (Unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARTIFACT="lsend-${{ matrix.target }}"
+          mkdir -p "$ARTIFACT"
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "$ARTIFACT/"
+          cp README.md "$ARTIFACT/" 2>/dev/null || true
+          cp LICENSE "$ARTIFACT/" 2>/dev/null || true
+          tar -C "$ARTIFACT" -czf "$ARTIFACT.tar.gz" .
+          ls -lh "$ARTIFACT.tar.gz"
+
+      - name: package (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $artifact = "lsend-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path $artifact -Force | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.bin }}" -Destination $artifact
+          if (Test-Path README.md) { Copy-Item README.md -Destination $artifact }
+          if (Test-Path LICENSE)  { Copy-Item LICENSE  -Destination $artifact }
+          Compress-Archive -Path "$artifact/*" -DestinationPath "$artifact.zip"
+          Get-ChildItem "$artifact.zip"
+
+      - name: upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lsend-${{ matrix.target }}
+          path: lsend-${{ matrix.target }}.${{ matrix.archive }}
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-22.04
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+      id-token: none
+    steps:
+      - name: download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: list artifacts
+        run: ls -lh artifacts
+
+      - name: generate checksums
+        working-directory: artifacts
+        run: |
+          # SHA256SUMS lets users verify downloads. One file, easy to inspect.
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            artifacts/*
+          fail_on_unmatched_files: true
+          body: |
+            ## Installation
+
+            Download the archive for your platform below, extract it, and put `lsend`
+            on your `PATH`.
+
+            ### Quick install (macOS / Linux)
+
+            ```bash
+            curl -L https://github.com/lsendapp/cli/releases/latest/download/lsend-$(uname -m | sed 's/x86_64/x86_64/;s/aarch64/aarch64/')-$(uname -s | tr A-Z a-z | sed 's/darwin/apple-darwin/;s/linux/unknown-linux-musl/').tar.gz \
+              | tar xz
+            sudo mv lsend /usr/local/bin/
+            ```
+
+            ### Windows
+
+            Download `lsend-x86_64-pc-windows-msvc.zip` (or `-aarch64-`), extract,
+            and add the folder to your `PATH`.
+
+            ### From source
+
+            ```bash
+            cargo install lsend-cli --locked
+            ```
+
+            ## Verify
+
+            Compare the archive's SHA-256 against `SHA256SUMS` in this release.
+
+            ```bash
+            sha256sum lsend-*.tar.gz
+            ```
+
+            See the [README](https://github.com/lsendapp/cli#readme) and
+            [`skills/localsend-cli/SKILL.md`](https://github.com/lsendapp/cli/blob/main/skills/localsend-cli/SKILL.md)
+            for usage.
