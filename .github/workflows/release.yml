@@ -120,28 +120,38 @@ jobs:
 
       # macOS code signing + notarization. Optional — workflow runs without
       # these secrets, but unsigned binaries will trigger Gatekeeper warnings.
+      #
+      # apple-actions/import-codesign-certs@v2 already:
+      #   - creates the `signing_temp.keychain` keychain
+      #   - unlocks it (with an auto-generated password)
+      #   - imports the P12 + sets the apple-tool/apple partition list (so
+      #     /usr/bin/codesign can use the private key without a passphrase prompt)
+      #   - adds signing_temp.keychain to the user keychain search list
+      # So no manual keychain manipulation is needed below — we only run a
+      # sanity check to fail fast if the identity isn't visible to codesign.
       - name: Import signing certificate (macOS)
+        id: import-codesign-certs
         if: runner.os == 'macOS' && env.HAS_APPLE_CERTIFICATE == 'true'
         uses: apple-actions/import-codesign-certs@v2
         with:
           p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
           p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
 
-      # apple-actions/import-codesign-certs imports the cert into a temporary
-      # keychain named 'signing_temp', but `codesign` only searches the login
-      # keychain by default. We have to add signing_temp to the search list
-      # (and unlock it) before codesign can find the identity.
-      - name: Make signing identity available to codesign (macOS)
+      - name: Verify signing identity is visible to codesign (macOS)
         if: runner.os == 'macOS' && env.HAS_APPLE_CERTIFICATE == 'true'
         run: |
           set -euo pipefail
-          KEYCHAIN=signing_temp.keychain
-          # Append $KEYCHAIN to the user search list (preserves existing entries).
-          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
-          # Unlock so codesign can read the private key.
-          security unlock-keychain -p "${{ steps.import-codesign-certs.outputs.keychain-password }}" "$KEYCHAIN"
-          # Sanity check: confirm codesign can see at least one Developer ID identity.
-          security find-identity -p "Developer ID Application" -v
+          # `codesigning` is the supported `find-identity` policy; it lists
+          # all code-signing identities (Developer ID Application, Apple
+          # Development, etc.). The grep confirms a Developer ID Application
+          # identity — the only kind suitable for distribution signing.
+          if ! security find-identity -p codesigning -v \
+               | grep -q '"Developer ID Application:'; then
+            echo "::error::No Developer ID Application identity found in keychain"
+            security find-identity -p codesigning -v
+            exit 1
+          fi
+          security find-identity -p codesigning -v
 
       - name: Codesign binary (macOS)
         if: runner.os == 'macOS' && env.HAS_APPLE_CERTIFICATE == 'true'
@@ -150,9 +160,11 @@ jobs:
           BIN="target/${{ matrix.target }}/release/${{ matrix.bin }}"
           # codesign's --sign takes an identity string in the form
           # "Developer ID Application: <TEAM NAME>". We extract it from
-          # the search list (already populated in the previous step) so
-          # the exact name doesn't have to be hard-coded.
-          IDENTITY=$(security find-identity -p "Developer ID Application" -v | grep -o '"Developer ID Application: [^"]*"' | head -n1)
+          # the search list (already populated by import-codesign-certs) so
+          # the exact name doesn't have to be hard-coded. `codesigning` is the
+          # supported find-identity policy; grep then selects the Developer ID
+          # Application entry specifically.
+          IDENTITY=$(security find-identity -p codesigning -v | grep -o '"Developer ID Application: [^"]*"' | head -n1)
           if [ -z "$IDENTITY" ]; then
             echo "::error::No Developer ID Application identity found in keychain"
             exit 1
