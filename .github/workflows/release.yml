@@ -145,48 +145,34 @@ jobs:
           # all code-signing identities (Developer ID Application, Apple
           # Development, etc.). The grep confirms a Developer ID Application
           # identity — the only kind suitable for distribution signing.
-          if security find-identity -p codesigning -v \
+          if ! security find-identity -p codesigning -v \
                | grep -q '"Developer ID Application:'; then
-            security find-identity -p codesigning -v
-            exit 0
+            echo "::error::No Developer ID Application identity in keychain."
+            echo "This usually means the APPLE_CERTIFICATE secret is wrong --"
+            echo "e.g. the .p12 contains a private key without its certificate,"
+            echo "or the cert is expired/not a Developer ID Application cert."
+            echo "--- find-identity -p codesigning -v (whole search list) ---"
+            security find-identity -p codesigning -v 2>&1 || true
+            echo "--- find-certificate -a over signing_temp.keychain ---"
+            security find-certificate -a signing_temp.keychain 2>&1 || true
+            exit 1
           fi
-
-          # Diagnostics: figure out *why* the identity isn't visible so we
-          # don't have to iterate another full run to find out.
-          echo "::error::No Developer ID Application identity found in keychain"
-          echo "--- user keychain search list ---"
-          security list-keychains -d user
-          echo "--- keychain files in ~/Library/Keychains ---"
-          ls -la ~/Library/Keychains/ 2>/dev/null || true
-          echo "--- show-keychain-info signing_temp.keychain ---"
-          security show-keychain-info signing_temp.keychain 2>&1 || true
-          echo "--- find-identity -p codesigning (VALID ONLY) over whole search list ---"
-          security find-identity -p codesigning -v 2>&1 || true
-          echo "--- find-identity -p codesigning (ALL, incl. expired/not-yet-valid) over whole search list ---"
-          security find-identity -p codesigning 2>&1 || true
-          echo "--- find-identity (ALL identities, no policy filter) over whole search list ---"
-          security find-identity 2>&1 || true
-          echo "--- find-identity (ALL) over signing_temp.keychain only ---"
-          security find-identity signing_temp.keychain 2>&1 || true
-          echo "--- find-certificate -a (subject/issuer/dates) over signing_temp.keychain ---"
-          security find-certificate -a -p signing_temp.keychain \
-            | openssl x509 -noout -subject -issuer -dates 2>&1 || true
-          echo "--- raw find-certificate -a over signing_temp.keychain (attribute dump) ---"
-          security find-certificate -a signing_temp.keychain 2>&1 || true
-          exit 1
+          security find-identity -p codesigning -v
 
       - name: Codesign binary (macOS)
         if: runner.os == 'macOS' && env.HAS_APPLE_CERTIFICATE == 'true'
         run: |
           set -euo pipefail
           BIN="target/${{ matrix.target }}/release/${{ matrix.bin }}"
-          # codesign's --sign takes an identity string in the form
-          # "Developer ID Application: <TEAM NAME>". We extract it from
-          # the search list (already populated by import-codesign-certs) so
-          # the exact name doesn't have to be hard-coded. `codesigning` is the
-          # supported find-identity policy; grep then selects the Developer ID
-          # Application entry specifically.
-          IDENTITY=$(security find-identity -p codesigning -v | grep -o '"Developer ID Application: [^"]*"' | head -n1)
+          # codesign's --sign takes an identity name in the form
+          # "Developer ID Application: <TEAM NAME> (TEAMID)". find-identity
+          # wraps the displayed name in double quotes; we strip those quotes
+          # so codesign gets the bare name and can match it against the
+          # keychain identity.
+          IDENTITY=$(security find-identity -p codesigning -v \
+            | grep -o '"Developer ID Application: [^"]*"' \
+            | head -n1 \
+            | tr -d '"')
           if [ -z "$IDENTITY" ]; then
             echo "::error::No Developer ID Application identity found in keychain"
             exit 1
