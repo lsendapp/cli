@@ -3,10 +3,16 @@
 # Triggers:
 #   - push tag matching 'v*'        → publish GitHub Release for that tag
 #   - workflow_dispatch (manual)    → publish using ${{ github.ref_name }}
-#                                     (defaults to "dispatch-<sha>" if not a tag)
 #
 # Required secrets: none.
-# Optional env (used by release body only): none.
+# Optional secrets (macOS signing + notarization — workflow runs without them,
+# but unsigned binaries will trigger Gatekeeper warnings on first use):
+#   APPLE_CERTIFICATE              Base64-encoded .p12 (Developer ID Application)
+#   APPLE_CERTIFICATE_PASSWORD     .p12 password
+#   APPLE_TEAM_ID                  10-char Apple Developer Team ID
+#   APPLE_API_KEY_CONTENT          Base64-encoded .p8 (App Store Connect API key)
+#   APPLE_API_KEY                  API Key ID (10 chars)
+#   APPLE_API_ISSUER               API Issuer ID (UUID)
 
 name: Build & Release
 
@@ -26,38 +32,44 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # Apple silicon
-          - target: aarch64-apple-darwin
-            os: macos-14
-            archive: tar.gz
-            bin: lsend
-          # Apple Intel
-          - target: x86_64-apple-darwin
-            os: macos-14
-            archive: tar.gz
-            bin: lsend
-          # Linux x86_64 (musl — static binary via Zig cross-compile)
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-22.04
-            archive: tar.gz
-            bin: lsend
-          # Linux arm64 (musl — static binary via Zig cross-compile)
-          - target: aarch64-unknown-linux-musl
-            os: ubuntu-22.04
-            archive: tar.gz
-            bin: lsend
-          # Windows x86_64
-          - target: x86_64-pc-windows-msvc
-            os: windows-2022
-            archive: zip
-            bin: lsend.exe
-          # Windows arm64
-          - target: aarch64-pc-windows-msvc
-            os: windows-2022
-            archive: zip
-            bin: lsend.exe
+      include:
+        # Apple silicon
+        - target: aarch64-apple-darwin
+          os: macos-14
+          archive: tar.gz
+          bin: lsend
+        # Apple Intel
+        - target: x86_64-apple-darwin
+          os: macos-14
+          archive: tar.gz
+          bin: lsend
+        # Linux x86_64 (musl — static binary via Zig cross-compile)
+        - target: x86_64-unknown-linux-musl
+          os: ubuntu-22.04
+          archive: tar.gz
+          bin: lsend
+        # Linux arm64 (musl — static binary via Zig cross-compile)
+        - target: aarch64-unknown-linux-musl
+          os: ubuntu-22.04
+          archive: tar.gz
+          bin: lsend
+        # Windows x86_64
+        - target: x86_64-pc-windows-msvc
+          os: windows-2022
+          archive: zip
+          bin: lsend.exe
+        # Windows arm64
+        - target: aarch64-pc-windows-msvc
+          os: windows-2022
+          archive: zip
+          bin: lsend.exe
 
+    env:
+      # Detect optional Apple secrets. HAS_APPLE_CERTIFICATE / HAS_APPLE_API_KEY
+      # gate the signing + notarization steps below. The workflow runs without
+      # these secrets — macOS binaries will simply be unsigned (Gatekeeper warns).
+      HAS_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE != '' }}
+      HAS_APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_CONTENT != '' && secrets.APPLE_API_KEY != '' && secrets.APPLE_API_ISSUER != '' }}
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -69,9 +81,6 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-          # Linux uses cargo-zigbuild so `ring` (which needs a C cross-compiler)
-          # can target musl without installing musl-tools or zig manually.
-          # macOS and Windows build natively with cargo (no cross-compile needed).
       - name: Install Zig (Linux only)
         if: matrix.os == 'ubuntu-22.04'
         uses: mlugg/setup-zig@v2
@@ -108,6 +117,48 @@ jobs:
           CARGO_PROFILE_RELEASE_LTO: fat
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 1
 
+
+      # macOS code signing + notarization. Optional — workflow runs without
+      # these secrets, but unsigned binaries will trigger Gatekeeper warnings.
+      - name: Import signing certificate (macOS)
+        if: runner.os == 'macOS' && env.HAS_APPLE_CERTIFICATE == 'true'
+        uses: apple-actions/import-codesign-certs@v2
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      - name: Codesign binary (macOS)
+        if: runner.os == 'macOS' && env.HAS_APPLE_CERTIFICATE == 'true'
+        run: |
+          set -euo pipefail
+          codesign --force --deep --sign "Developer ID Application: ${{ secrets.APPLE_TEAM_ID }}" \
+            --options runtime --timestamp \
+            "target/${{ matrix.target }}/release/${{ matrix.bin }}"
+          codesign --verify --verbose=2 "target/${{ matrix.target }}/release/${{ matrix.bin }}"
+
+      - name: Setup notarization API key (macOS)
+        if: runner.os == 'macOS' && env.HAS_APPLE_API_KEY == 'true'
+        run: echo "${{ secrets.APPLE_API_KEY_CONTENT }}" | base64 -d > api_key.p8
+
+      - name: Notarize and staple (macOS)
+        if: runner.os == 'macOS' && env.HAS_APPLE_API_KEY == 'true'
+        run: |
+          set -euo pipefail
+          BIN="target/${{ matrix.target }}/release/${{ matrix.bin }}"
+          # notarytool needs the binary in a zip (not the raw Mach-O).
+          ditto -c -k --sequesterRsrc --keepParent "$BIN" "${BIN}.zip"
+          xcrun notarytool submit "${BIN}.zip" \
+            --key api_key.p8 \
+            --key-id "${{ secrets.APPLE_API_KEY }}" \
+            --issuer "${{ secrets.APPLE_API_ISSUER }}" \
+            --wait
+          xcrun stapler staple "$BIN"
+          xcrun stapler validate "$BIN"
+          rm -f "${BIN}.zip"
+
+      - name: Cleanup API key (macOS)
+        if: always() && runner.os == 'macOS'
+        run: rm -f api_key.p8
       - name: Package (Unix)
         if: matrix.archive == 'tar.gz'
         shell: bash
