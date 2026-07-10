@@ -188,7 +188,7 @@ jobs:
         if: runner.os == 'macOS' && env.HAS_APPLE_API_KEY == 'true'
         run: echo "${{ secrets.APPLE_API_KEY_CONTENT }}" | base64 -d > api_key.p8
 
-      - name: Notarize and staple (macOS)
+      - name: Notarize binary (macOS)
         if: runner.os == 'macOS' && env.HAS_APPLE_API_KEY == 'true'
         run: |
           set -euo pipefail
@@ -200,9 +200,13 @@ jobs:
             --key-id "${{ secrets.APPLE_API_KEY }}" \
             --issuer "${{ secrets.APPLE_API_ISSUER }}" \
             --wait
-          xcrun stapler staple "$BIN"
-          xcrun stapler validate "$BIN"
           rm -f "${BIN}.zip"
+          # Note: `xcrun stapler staple` only works for .app bundles, .dmg,
+          # .pkg, and .zip containers -- NOT bare Mach-O executables. We
+          # distribute `lsend` as a raw binary inside a tar.gz, so stapling
+          # is not applicable. The notarization record on Apple's servers
+          # (status: Accepted above) is what Gatekeeper checks at runtime
+          # via the binary's cdhash, with no staple ticket needed.
 
       - name: Cleanup API key (macOS)
         if: always() && runner.os == 'macOS'
