@@ -145,13 +145,28 @@ jobs:
           # all code-signing identities (Developer ID Application, Apple
           # Development, etc.). The grep confirms a Developer ID Application
           # identity — the only kind suitable for distribution signing.
-          if ! security find-identity -p codesigning -v \
+          if security find-identity -p codesigning -v \
                | grep -q '"Developer ID Application:'; then
-            echo "::error::No Developer ID Application identity found in keychain"
             security find-identity -p codesigning -v
-            exit 1
+            exit 0
           fi
-          security find-identity -p codesigning -v
+
+          # Diagnostics: figure out *why* the identity isn't visible so we
+          # don't have to iterate another full run to find out.
+          echo "::error::No Developer ID Application identity found in keychain"
+          echo "--- user keychain search list ---"
+          security list-keychains -d user
+          echo "--- keychain files in ~/Library/Keychains ---"
+          ls -la ~/Library/Keychains/ 2>/dev/null || true
+          echo "--- find-identity (no policy filter) over the whole search list ---"
+          security find-identity -v
+          echo "--- find-identity over signing_temp.keychain only ---"
+          security find-identity -v signing_temp.keychain 2>&1 || true
+          echo "--- find-identity -p codesigning over signing_temp.keychain only ---"
+          security find-identity -p codesigning -v signing_temp.keychain 2>&1 || true
+          echo "--- show-keychain-info signing_temp.keychain ---"
+          security show-keychain-info signing_temp.keychain 2>&1 || true
+          exit 1
 
       - name: Codesign binary (macOS)
         if: runner.os == 'macOS' && env.HAS_APPLE_CERTIFICATE == 'true'
