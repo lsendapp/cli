@@ -12,7 +12,14 @@ Non-interactive file transfer compatible with the LocalSend app.
 
 ## Before running
 
-1. Build or locate the binary: `cargo build --release` → `target/release/lsend`
+1. **Install the prebuilt binary** (don't compile from source — agents don't need a Rust toolchain). Auto-detects arch and OS:
+   ```bash
+   curl -L https://github.com/lsendapp/cli/releases/latest/download/lsend-$(uname -m | sed 's/x86_64/x86_64/;s/aarch64/aarch64/')-$(uname -s | tr A-Z a-z | sed 's/darwin/apple-darwin/;s/linux/unknown-linux-musl/').tar.gz \
+     | tar xz \
+     && sudo install lsend /usr/local/bin/
+   lsend --version   # verify
+   ```
+   Windows: download `lsend-x86_64-pc-windows-msvc.zip` (or `-aarch64-`), extract, add the folder to `PATH`. macOS binaries are signed + notarized, so no Gatekeeper warning.
 2. Read focused docs offline: `lsend agent` or `lsend agent send`
 3. Use **`--json`**, piped stdout, or **`LSEND_NO_TUI=1`** for machine-parseable output
 4. Close whatever holds port 53317 (e.g. the LocalSend app, another `lsend receive`) before `receive`
