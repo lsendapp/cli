@@ -37,12 +37,12 @@ jobs:
             os: macos-14
             archive: tar.gz
             bin: lsend
-          # Linux x86_64 (musl for static binary, no glibc compat issues)
+          # Linux x86_64 (musl — static binary via Zig cross-compile)
           - target: x86_64-unknown-linux-musl
             os: ubuntu-22.04
             archive: tar.gz
             bin: lsend
-          # Linux arm64 (musl)
+          # Linux arm64 (musl — static binary via Zig cross-compile)
           - target: aarch64-unknown-linux-musl
             os: ubuntu-22.04
             archive: tar.gz
@@ -69,6 +69,19 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+          # Linux uses cargo-zigbuild so `ring` (which needs a C cross-compiler)
+          # can target musl without installing musl-tools or zig manually.
+          # macOS and Windows build natively with cargo (no cross-compile needed).
+      - name: Install Zig (Linux only)
+        if: matrix.os == 'ubuntu-22.04'
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+
+      - name: Install cargo-zigbuild (Linux only)
+        if: matrix.os == 'ubuntu-22.04'
+        run: cargo install --locked cargo-zigbuild
+
       - name: Cache cargo registry & target
         uses: Swatinem/rust-cache@v2
         with:
@@ -77,7 +90,12 @@ jobs:
             vendor/localsend-core -> target
 
       - name: Build (release, stripped)
-        run: cargo build --release --target ${{ matrix.target }} --locked
+        run: |
+          if [ "${{ matrix.os }}" = "ubuntu-22.04" ]; then
+            cargo zigbuild --release --target ${{ matrix.target }} --locked
+          else
+            cargo build --release --target ${{ matrix.target }} --locked
+          fi
         env:
           # Strip debug info, enable LTO, single codegen unit → smaller binary.
           CARGO_PROFILE_RELEASE_STRIP: symbols
