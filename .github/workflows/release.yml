@@ -158,14 +158,21 @@ jobs:
           security list-keychains -d user
           echo "--- keychain files in ~/Library/Keychains ---"
           ls -la ~/Library/Keychains/ 2>/dev/null || true
-          echo "--- find-identity (no policy filter) over the whole search list ---"
-          security find-identity -v
-          echo "--- find-identity over signing_temp.keychain only ---"
-          security find-identity -v signing_temp.keychain 2>&1 || true
-          echo "--- find-identity -p codesigning over signing_temp.keychain only ---"
-          security find-identity -p codesigning -v signing_temp.keychain 2>&1 || true
           echo "--- show-keychain-info signing_temp.keychain ---"
           security show-keychain-info signing_temp.keychain 2>&1 || true
+          echo "--- find-identity -p codesigning (VALID ONLY) over whole search list ---"
+          security find-identity -p codesigning -v 2>&1 || true
+          echo "--- find-identity -p codesigning (ALL, incl. expired/not-yet-valid) over whole search list ---"
+          security find-identity -p codesigning 2>&1 || true
+          echo "--- find-identity (ALL identities, no policy filter) over whole search list ---"
+          security find-identity 2>&1 || true
+          echo "--- find-identity (ALL) over signing_temp.keychain only ---"
+          security find-identity signing_temp.keychain 2>&1 || true
+          echo "--- find-certificate -a (subject/issuer/dates) over signing_temp.keychain ---"
+          security find-certificate -a -p signing_temp.keychain \
+            | openssl x509 -noout -subject -issuer -dates 2>&1 || true
+          echo "--- raw find-certificate -a over signing_temp.keychain (attribute dump) ---"
+          security find-certificate -a signing_temp.keychain 2>&1 || true
           exit 1
 
       - name: Codesign binary (macOS)
