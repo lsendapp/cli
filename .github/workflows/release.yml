@@ -89,13 +89,19 @@ jobs:
             .
             vendor/localsend-core -> target
 
-      - name: Build (release, stripped)
-        run: |
-          if [ "${{ matrix.os }}" = "ubuntu-22.04" ]; then
-            cargo zigbuild --release --target ${{ matrix.target }} --locked
-          else
-            cargo build --release --target ${{ matrix.target }} --locked
-          fi
+      - name: Build (release, stripped) — Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: cargo zigbuild --release --target ${{ matrix.target }} --locked
+        env:
+          # Strip debug info, enable LTO, single codegen unit → smaller binary.
+          CARGO_PROFILE_RELEASE_STRIP: symbols
+          CARGO_PROFILE_RELEASE_LTO: fat
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 1
+
+      - name: Build (release, stripped) — macOS/Windows
+        if: runner.os != 'Linux'
+        run: cargo build --release --target ${{ matrix.target }} --locked
         env:
           # Strip debug info, enable LTO, single codegen unit → smaller binary.
           CARGO_PROFILE_RELEASE_STRIP: symbols
