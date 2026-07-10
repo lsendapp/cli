@@ -127,14 +127,42 @@ jobs:
           p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
           p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
 
+      # apple-actions/import-codesign-certs imports the cert into a temporary
+      # keychain named 'signing_temp', but `codesign` only searches the login
+      # keychain by default. We have to add signing_temp to the search list
+      # (and unlock it) before codesign can find the identity.
+      - name: Make signing identity available to codesign (macOS)
+        if: runner.os == 'macOS' && env.HAS_APPLE_CERTIFICATE == 'true'
+        run: |
+          set -euo pipefail
+          KEYCHAIN=signing_temp.keychain
+          # Append $KEYCHAIN to the user search list (preserves existing entries).
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          # Unlock so codesign can read the private key.
+          security unlock-keychain -p "${{ steps.import-codesign-certs.outputs.keychain-password }}" "$KEYCHAIN"
+          # Sanity check: confirm codesign can see at least one Developer ID identity.
+          security find-identity -p "Developer ID Application" -v
+
       - name: Codesign binary (macOS)
         if: runner.os == 'macOS' && env.HAS_APPLE_CERTIFICATE == 'true'
         run: |
           set -euo pipefail
-          codesign --force --deep --sign "Developer ID Application: ${{ secrets.APPLE_TEAM_ID }}" \
+          BIN="target/${{ matrix.target }}/release/${{ matrix.bin }}"
+          # codesign's --sign takes an identity string in the form
+          # "Developer ID Application: <TEAM NAME>". We extract it from
+          # the search list (already populated in the previous step) so
+          # the exact name doesn't have to be hard-coded.
+          IDENTITY=$(security find-identity -p "Developer ID Application" -v | grep -o '"Developer ID Application: [^"]*"' | head -n1)
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::No Developer ID Application identity found in keychain"
+            exit 1
+          fi
+          echo "Using identity: $IDENTITY"
+          codesign --force --deep \
+            --sign "$IDENTITY" \
             --options runtime --timestamp \
-            "target/${{ matrix.target }}/release/${{ matrix.bin }}"
-          codesign --verify --verbose=2 "target/${{ matrix.target }}/release/${{ matrix.bin }}"
+            "$BIN"
+          codesign --verify --verbose=2 "$BIN"
 
       - name: Setup notarization API key (macOS)
         if: runner.os == 'macOS' && env.HAS_APPLE_API_KEY == 'true'
