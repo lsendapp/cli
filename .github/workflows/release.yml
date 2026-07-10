@@ -1,19 +1,28 @@
-name: release
+# Build & Release lsend binaries for all platforms.
+#
+# Triggers:
+#   - push tag matching 'v*'        → publish GitHub Release for that tag
+#   - workflow_dispatch (manual)    → publish using ${{ github.ref_name }}
+#                                     (defaults to "dispatch-<sha>" if not a tag)
+#
+# Required secrets: none.
+# Optional env (used by release body only): none.
+
+name: Build & Release
 
 on:
   push:
-    tags: ['v*']
-
-permissions:
-  contents: write
+    tags:
+      - 'v*'
+  workflow_dispatch:
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: build (${{ matrix.target }})
+    name: Build (${{ matrix.target }})
     strategy:
       fail-fast: false
       matrix:
@@ -52,32 +61,30 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - name: checkout
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: install Rust toolchain
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: cache cargo registry & target
+      - name: Cache cargo registry & target
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             .
             vendor/localsend-core -> target
 
-      - name: build (release, stripped)
+      - name: Build (release, stripped)
         run: cargo build --release --target ${{ matrix.target }} --locked
         env:
-          # Strip debug info — halves binary size. CARGO_PROFILE_RELEASE_STRIP=symbols
-          # is honored by cargo 1.59+; combined with the linker's strip pass this
-          # yields a lean release binary.
+          # Strip debug info, enable LTO, single codegen unit → smaller binary.
           CARGO_PROFILE_RELEASE_STRIP: symbols
           CARGO_PROFILE_RELEASE_LTO: fat
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 1
 
-      - name: package (Unix)
+      - name: Package (Unix)
         if: matrix.archive == 'tar.gz'
         shell: bash
         run: |
@@ -90,7 +97,7 @@ jobs:
           tar -C "$ARTIFACT" -czf "$ARTIFACT.tar.gz" .
           ls -lh "$ARTIFACT.tar.gz"
 
-      - name: package (Windows)
+      - name: Package (Windows)
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
@@ -103,7 +110,7 @@ jobs:
           Compress-Archive -Path "$artifact/*" -DestinationPath "$artifact.zip"
           Get-ChildItem "$artifact.zip"
 
-      - name: upload build artifact
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: lsend-${{ matrix.target }}
@@ -112,31 +119,29 @@ jobs:
           retention-days: 7
 
   release:
-    name: publish release
+    name: Create GitHub Release
     needs: build
-    runs-on: ubuntu-22.04
-    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     permissions:
       contents: write
-      id-token: none
     steps:
-      - name: download all artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
-      - name: list artifacts
+      - name: List artifacts
         run: ls -lh artifacts
 
-      - name: generate checksums
+      - name: Generate SHA256SUMS
         working-directory: artifacts
         run: |
-          # SHA256SUMS lets users verify downloads. One file, easy to inspect.
           sha256sum * > SHA256SUMS
           cat SHA256SUMS
 
-      - name: publish GitHub release
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
@@ -150,12 +155,13 @@ jobs:
           body: |
             ## Installation
 
-            Download the archive for your platform below, extract it, and put `lsend`
-            on your `PATH`.
+            Download the archive for your platform below, extract it, and put
+            `lsend` on your `PATH`.
 
             ### Quick install (macOS / Linux)
 
             ```bash
+            # Pick the URL matching your arch + OS, or use the one-liner below.
             curl -L https://github.com/lsendapp/cli/releases/latest/download/lsend-$(uname -m | sed 's/x86_64/x86_64/;s/aarch64/aarch64/')-$(uname -s | tr A-Z a-z | sed 's/darwin/apple-darwin/;s/linux/unknown-linux-musl/').tar.gz \
               | tar xz
             sudo mv lsend /usr/local/bin/
@@ -163,8 +169,8 @@ jobs:
 
             ### Windows
 
-            Download `lsend-x86_64-pc-windows-msvc.zip` (or `-aarch64-`), extract,
-            and add the folder to your `PATH`.
+            Download `lsend-x86_64-pc-windows-msvc.zip` (or `-aarch64-`),
+            extract, and add the folder to your `PATH`.
 
             ### From source
 
@@ -177,7 +183,7 @@ jobs:
             Compare the archive's SHA-256 against `SHA256SUMS` in this release.
 
             ```bash
-            sha256sum lsend-*.tar.gz
+            sha256sum -c SHA256SUMS
             ```
 
             See the [README](https://github.com/lsendapp/cli#readme) and
