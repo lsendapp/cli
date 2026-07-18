@@ -51,27 +51,47 @@ pub async fn scan(
     identity: &Identity,
     timeout_ms: u64,
 ) -> Result<Vec<DiscoveredDevice>> {
+    scan_inner(config, identity, timeout_ms, true).await
+}
+
+/// Scan without starting the temporary discovery HTTP server.
+///
+/// Resident applications already own the LocalSend TCP port for receiving, so
+/// attempting to bind a second server creates a startup race. UDP discovery and
+/// the legacy HTTP fallback still find peers without competing for that port.
+pub async fn scan_passive(
+    config: &AppConfig,
+    identity: &Identity,
+    timeout_ms: u64,
+) -> Result<Vec<DiscoveredDevice>> {
+    scan_inner(config, identity, timeout_ms, false).await
+}
+
+async fn scan_inner(
+    config: &AppConfig,
+    identity: &Identity,
+    timeout_ms: u64,
+    start_http_server: bool,
+) -> Result<Vec<DiscoveredDevice>> {
     let devices = Arc::new(Mutex::new(HashMap::<String, DiscoveredDevice>::new()));
     let multicast_group: Ipv4Addr = DEFAULT_MULTICAST_GROUP.parse()?;
     let listen_ms = timeout_ms.max(MULTICAST_MIN_LISTEN_MS);
 
-    let discovery_server = match start_discovery_server(
-        config.clone(),
-        identity.clone(),
-        devices.clone(),
-    )
-    .await
-    {
-        Ok(handle) => Some(handle),
-        Err(e) => {
-            warn!(
-                "Could not start discovery HTTP server on port {}: {e}. \
+    let discovery_server = if start_http_server {
+        match start_discovery_server(config.clone(), identity.clone(), devices.clone()).await {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                warn!(
+                    "Could not start discovery HTTP server on port {}: {e}. \
                      Close any other process holding port {} (e.g. the LocalSend app, another `lsend receive`), \
                      or use another --port. Peers may only respond via UDP.",
-                config.port, config.port
-            );
-            None
+                    config.port, config.port
+                );
+                None
+            }
         }
+    } else {
+        None
     };
 
     let listen_sockets = open_multicast_listen_sockets(config.port, multicast_group)
