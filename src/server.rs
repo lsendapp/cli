@@ -26,13 +26,13 @@ use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
 
 use crate::config::AppConfig;
+use crate::events::ReceiveEvent;
 use crate::identity::Identity;
 use crate::output::{OutputMode, ReceiveEventJson, print_json};
 
 /// Delay before returning 204 for embedded text messages so the mobile sender
 /// can finish its SendPage transition before reading the response.
 const TEXT_MESSAGE_RESPONSE_DELAY: Duration = Duration::from_millis(1200);
-
 #[derive(Clone)]
 pub struct ServerState {
     pub config: AppConfig,
@@ -41,6 +41,7 @@ pub struct ServerState {
     output: OutputMode,
     stop_after_transfer: bool,
     stop_tx: Option<mpsc::UnboundedSender<()>>,
+    event_tx: Option<mpsc::UnboundedSender<ReceiveEvent>>,
     inner: Arc<Mutex<InnerState>>,
     pin_attempts: Arc<Mutex<HashMap<String, u32>>>,
 }
@@ -82,6 +83,29 @@ impl ServerState {
         stop_after_transfer: bool,
         stop_tx: Option<mpsc::UnboundedSender<()>>,
     ) -> Self {
+        Self::new_with_events(
+            config,
+            identity,
+            receive_pin,
+            output,
+            stop_after_transfer,
+            stop_tx,
+            None,
+        )
+    }
+
+    /// Like [`ServerState::new`] but also forwards receive-lifecycle events to
+    /// `event_tx` for programmatic consumers. The CLI passes `None`; the
+    /// desktop app passes `Some(tx)` to drive tray state and notifications.
+    pub fn new_with_events(
+        config: AppConfig,
+        identity: Identity,
+        receive_pin: Option<String>,
+        output: OutputMode,
+        stop_after_transfer: bool,
+        stop_tx: Option<mpsc::UnboundedSender<()>>,
+        event_tx: Option<mpsc::UnboundedSender<ReceiveEvent>>,
+    ) -> Self {
         Self {
             config,
             identity,
@@ -89,6 +113,7 @@ impl ServerState {
             output,
             stop_after_transfer,
             stop_tx,
+            event_tx,
             inner: Arc::new(Mutex::new(InnerState { session: None })),
             pin_attempts: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -103,6 +128,14 @@ impl ServerState {
     fn emit_json_event(&self, event: ReceiveEventJson) {
         if self.output == OutputMode::Json {
             print_json(&event);
+        }
+    }
+
+    /// Forward a receive-lifecycle event to the programmatic channel, if any.
+    /// Saturates silently: a slow/stalled consumer never blocks the server.
+    fn emit_event(&self, event: ReceiveEvent) {
+        if let Some(tx) = &self.event_tx {
+            let _ = tx.send(event);
         }
     }
 }
@@ -160,8 +193,14 @@ fn build_router(state: ServerState) -> Router {
         .route("/api/localsend/v2/info", get(info_handler))
         .route("/api/localsend/v1/register", post(register_v1_handler))
         .route("/api/localsend/v2/register", post(register_handler))
-        .route("/api/localsend/v1/send-request", post(prepare_upload_v1_handler))
-        .route("/api/localsend/v2/prepare-upload", post(prepare_upload_v2_handler))
+        .route(
+            "/api/localsend/v1/send-request",
+            post(prepare_upload_v1_handler),
+        )
+        .route(
+            "/api/localsend/v2/prepare-upload",
+            post(prepare_upload_v2_handler),
+        )
         .route("/api/localsend/v1/send", post(upload_v1_handler))
         .route("/api/localsend/v2/upload", post(upload_v2_handler))
         .route("/api/localsend/v1/cancel", post(cancel_handler))
@@ -220,7 +259,10 @@ async fn info_v1_handler(
     Query(query): Query<HashMap<String, String>>,
 ) -> Result<Json<InfoResponseJson>, Response> {
     if is_self_fingerprint(&state, query.get("fingerprint")) {
-        return Err(error_response(StatusCode::PRECONDITION_FAILED, "Self-discovered"));
+        return Err(error_response(
+            StatusCode::PRECONDITION_FAILED,
+            "Self-discovered",
+        ));
     }
     Ok(Json(info_response_json(&state)))
 }
@@ -231,10 +273,16 @@ async fn register_v1_handler(
 ) -> Result<Json<InfoResponseJson>, Response> {
     let fingerprint = payload.fingerprint();
     if fingerprint.is_empty() {
-        return Err(error_response(StatusCode::BAD_REQUEST, "Missing fingerprint"));
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "Missing fingerprint",
+        ));
     }
     if fingerprint == state.identity.fingerprint {
-        return Err(error_response(StatusCode::PRECONDITION_FAILED, "Self-discovered"));
+        return Err(error_response(
+            StatusCode::PRECONDITION_FAILED,
+            "Self-discovered",
+        ));
     }
     Ok(Json(info_response_json(&state)))
 }
@@ -297,7 +345,10 @@ async fn prepare_upload_handler(
     };
 
     if request.files.is_empty() {
-        return error_response(StatusCode::BAD_REQUEST, "Request must contain at least one file");
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Request must contain at least one file",
+        );
     }
 
     if let Some(text) = extract_embedded_text_message(&request.files) {
@@ -332,12 +383,18 @@ async fn prepare_upload_handler(
         request.sender_alias,
         session_files.len()
     ));
+    let sender_alias_for_event = request.sender_alias.clone();
+    let file_count_for_event = session_files.len();
     if state.output == OutputMode::Json {
         state.emit_json_event(ReceiveEventJson::TransferStarted {
             sender_alias: request.sender_alias,
             file_count: session_files.len(),
         });
     }
+    state.emit_event(ReceiveEvent::TransferStarted {
+        sender_alias: sender_alias_for_event,
+        file_count: file_count_for_event,
+    });
 
     let mut guard = state.inner.lock().await;
     guard.session = Some(ReceiveSession {
@@ -451,7 +508,9 @@ impl std::fmt::Display for PrepareUploadParseError {
     }
 }
 
-fn parse_prepare_upload_request(body: &str) -> Result<ParsedPrepareUpload, PrepareUploadParseError> {
+fn parse_prepare_upload_request(
+    body: &str,
+) -> Result<ParsedPrepareUpload, PrepareUploadParseError> {
     if let Ok(dto) = serde_json::from_str::<PrepareUploadRequestCompat>(body) {
         let mut files = HashMap::with_capacity(dto.files.len());
         for (id, file) in dto.files {
@@ -483,7 +542,11 @@ fn parse_prepare_upload_request(body: &str) -> Result<ParsedPrepareUpload, Prepa
         files.insert(map_key.clone(), parse_file_dto(map_key, file_value)?);
     }
 
-    Ok(ParsedPrepareUpload { sender_alias: alias, sender_version: version, files })
+    Ok(ParsedPrepareUpload {
+        sender_alias: alias,
+        sender_version: version,
+        files,
+    })
 }
 
 fn read_string_field(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
@@ -541,7 +604,9 @@ fn parse_file_dto(
     })
 }
 
-fn parse_file_metadata(value: &serde_json::Value) -> Option<localsend::model::transfer::FileMetadata> {
+fn parse_file_metadata(
+    value: &serde_json::Value,
+) -> Option<localsend::model::transfer::FileMetadata> {
     let _object = value.as_object()?;
     Some(localsend::model::transfer::FileMetadata {
         modified: read_string_field(value, &["modified", "lastModified"]),
@@ -580,6 +645,12 @@ async fn handle_embedded_text_message(
         });
         state.emit_json_event(ReceiveEventJson::TransferComplete);
     }
+    state.emit_event(ReceiveEvent::MessageReceived {
+        sender_alias: sender_alias.to_string(),
+        text: text.to_string(),
+        size: bytes,
+    });
+    state.emit_event(ReceiveEvent::TransferComplete);
     tokio::time::sleep(TEXT_MESSAGE_RESPONSE_DELAY).await;
     if state.stop_after_transfer {
         if let Some(tx) = &state.stop_tx {
@@ -645,7 +716,9 @@ async fn upload_handler(
         );
     }
 
-    if session.status != SessionStatus::Sending && session.status != SessionStatus::FinishedWithErrors {
+    if session.status != SessionStatus::Sending
+        && session.status != SessionStatus::FinishedWithErrors
+    {
         return error_response(StatusCode::CONFLICT, "Recipient is in wrong state");
     }
 
@@ -687,18 +760,19 @@ async fn upload_handler(
         Ok(bytes) => {
             entry.path = Some(target_path.clone());
             entry.failed = false;
-            state.notify_human(format!(
-                "Saved {} ({} bytes)",
-                target_path.display(),
-                bytes
-            ));
+            state.notify_human(format!("Saved {} ({} bytes)", target_path.display(), bytes));
             if state.output == OutputMode::Json {
                 state.emit_json_event(ReceiveEventJson::FileSaved {
                     path: target_path.display().to_string(),
-                    file_name: desired_name,
+                    file_name: desired_name.clone(),
                     size: bytes,
                 });
             }
+            state.emit_event(ReceiveEvent::FileSaved {
+                path: target_path.clone(),
+                file_name: desired_name,
+                size: bytes,
+            });
         }
         Err(e) => {
             entry.failed = true;
@@ -716,12 +790,14 @@ async fn upload_handler(
             if state.output == OutputMode::Json {
                 state.emit_json_event(ReceiveEventJson::TransferFinishedWithErrors);
             }
+            state.emit_event(ReceiveEvent::TransferFinishedWithErrors);
         } else {
             session.status = SessionStatus::Finished;
             state.notify_human("Transfer complete.");
             if state.output == OutputMode::Json {
                 state.emit_json_event(ReceiveEventJson::TransferComplete);
             }
+            state.emit_event(ReceiveEvent::TransferComplete);
             guard.session = None;
             if state.stop_after_transfer {
                 if let Some(tx) = &state.stop_tx {
@@ -764,7 +840,9 @@ fn evaluate_cancel(
     if v2_cancel && requested_session_id != Some(session.session_id.as_str()) {
         return CancelDecision::Deny("session id mismatch");
     }
-    if session.status != SessionStatus::Sending && session.status != SessionStatus::FinishedWithErrors {
+    if session.status != SessionStatus::Sending
+        && session.status != SessionStatus::FinishedWithErrors
+    {
         return CancelDecision::Deny("session not cancellable in current state");
     }
     CancelDecision::Allow
@@ -778,12 +856,17 @@ async fn cancel_handler(
     let requested = params.get("sessionId").cloned();
     let mut guard = state.inner.lock().await;
 
-    match evaluate_cancel(guard.session.as_ref(), &addr.ip().to_string(), requested.as_deref()) {
+    match evaluate_cancel(
+        guard.session.as_ref(),
+        &addr.ip().to_string(),
+        requested.as_deref(),
+    ) {
         CancelDecision::Allow => {
             state.notify_human("Transfer cancelled by sender.");
             if state.output == OutputMode::Json {
                 state.emit_json_event(ReceiveEventJson::TransferCancelled);
             }
+            state.emit_event(ReceiveEvent::TransferCancelled);
             guard.session = None;
             StatusCode::OK
         }
@@ -870,10 +953,12 @@ fn validate_relative_file_name(file_name: &str) -> Result<(), String> {
     if path.is_absolute() {
         return Err("Absolute file paths are not allowed".to_string());
     }
-    if path
-        .components()
-        .any(|component| matches!(component, Component::ParentDir | Component::RootDir | Component::Prefix(_)))
-    {
+    if path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
         return Err("Path traversal is not allowed".to_string());
     }
     Ok(())
@@ -945,15 +1030,12 @@ async fn check_pin(
         ));
     }
 
-    let provided = query
-        .get("pin")
-        .cloned()
-        .or_else(|| {
-            headers
-                .get("pin")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string)
-        });
+    let provided = query.get("pin").cloned().or_else(|| {
+        headers
+            .get("pin")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    });
 
     match provided.as_deref() {
         None | Some("") => Some(error_response(StatusCode::UNAUTHORIZED, "PIN required")),
@@ -1038,10 +1120,7 @@ mod tests {
         let parsed = parse_prepare_upload_request(json).expect("parse");
         assert_eq!(parsed.sender_alias, "Cute Apple");
         assert_eq!(parsed.files.len(), 1);
-        assert_eq!(
-            extract_embedded_text_message(&parsed.files),
-            Some("hello")
-        );
+        assert_eq!(extract_embedded_text_message(&parsed.files), Some("hello"));
     }
 
     #[test]
@@ -1436,8 +1515,13 @@ mod integration_tests {
     use tower::ServiceExt;
 
     fn make_state(receive_dir: &std::path::Path, pin: Option<String>) -> ServerState {
-        let cfg = AppConfig::new(Some("Tester".into()), 53317, true, Some(receive_dir.to_path_buf()))
-            .expect("config");
+        let cfg = AppConfig::new(
+            Some("Tester".into()),
+            53317,
+            true,
+            Some(receive_dir.to_path_buf()),
+        )
+        .expect("config");
         let identity = Identity {
             cert_pem: String::new(),
             key_pem: String::new(),
@@ -1487,11 +1571,7 @@ mod integration_tests {
     }
 
     fn fresh_dir(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "lsend-int-{}-{}",
-            tag,
-            uuid::Uuid::new_v4()
-        ));
+        let dir = std::env::temp_dir().join(format!("lsend-int-{}-{}", tag, uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -1679,7 +1759,11 @@ mod integration_tests {
         let state = make_state(&dir, None);
         let (status, _, _) = call(
             &state,
-            raw_request("POST", "/api/localsend/v2/prepare-upload", b"not json".to_vec()),
+            raw_request(
+                "POST",
+                "/api/localsend/v2/prepare-upload",
+                b"not json".to_vec(),
+            ),
             peer_addr(),
         )
         .await;
@@ -1739,7 +1823,11 @@ mod integration_tests {
         // Correct PIN → 200
         let (status, _, _) = call(
             &state,
-            json_request("POST", "/api/localsend/v2/prepare-upload?pin=123456", Some(&body)),
+            json_request(
+                "POST",
+                "/api/localsend/v2/prepare-upload?pin=123456",
+                Some(&body),
+            ),
             peer_addr(),
         )
         .await;
@@ -1760,7 +1848,11 @@ mod integration_tests {
         }
         let (status, _, _) = call(
             &state,
-            json_request("POST", "/api/localsend/v2/prepare-upload?pin=wrong", Some(&body)),
+            json_request(
+                "POST",
+                "/api/localsend/v2/prepare-upload?pin=wrong",
+                Some(&body),
+            ),
             peer_addr(),
         )
         .await;

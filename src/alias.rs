@@ -74,9 +74,8 @@ pub fn validate_alias(alias: &str) -> Result<String> {
 }
 
 pub fn save(config_dir: &Path, alias: &str) -> Result<()> {
-    fs::create_dir_all(config_dir).with_context(|| {
-        format!("Failed to create config directory {}", config_dir.display())
-    })?;
+    fs::create_dir_all(config_dir)
+        .with_context(|| format!("Failed to create config directory {}", config_dir.display()))?;
 
     let alias = validate_alias(alias)?;
     let path = alias_path(config_dir);
@@ -320,7 +319,10 @@ mod tests {
         let data = locale_table().get("en").unwrap();
         let adj = &data.adjectives[0];
         let fruit = &data.fruits[0];
-        assert_eq!(combine(&data.combination, adj, fruit), format!("{adj} {fruit}"));
+        assert_eq!(
+            combine(&data.combination, adj, fruit),
+            format!("{adj} {fruit}")
+        );
     }
 
     #[test]
@@ -412,7 +414,8 @@ mod tests {
     }
 
     fn fresh_dir(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("lsend-alias-{}-{}", tag, uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("lsend-alias-{}-{}", tag, uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         dir
     }

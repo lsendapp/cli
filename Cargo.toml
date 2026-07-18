@@ -9,6 +9,10 @@ license = "Apache-2.0"
 name = "lsend"
 path = "src/main.rs"
 
+[lib]
+name = "lsend_core"
+path = "src/lib.rs"
+
 [dependencies]
 localsend = { path = "vendor/localsend-core", default-features = false, features = ["http"] }
 

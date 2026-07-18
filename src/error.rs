@@ -73,26 +73,25 @@ impl CliError {
                     target: target.to_string(),
                 };
             }
-            return Self::TargetNotFound {
-                target: message,
-            };
+            return Self::TargetNotFound { target: message };
         }
         if message == "No files to send" {
             return Self::NoFiles;
         }
         if message.starts_with("Alias must") {
-            return Self::InvalidAlias {
-                reason: message,
-            };
+            return Self::InvalidAlias { reason: message };
         }
         Self::Other(message)
     }
 }
 
 fn parse_port_from_message(message: &str) -> Option<u16> {
-    message
-        .split_whitespace()
-        .find_map(|token| token.trim_matches(|c: char| !c.is_ascii_digit()).parse().ok())
+    message.split_whitespace().find_map(|token| {
+        token
+            .trim_matches(|c: char| !c.is_ascii_digit())
+            .parse()
+            .ok()
+    })
 }
 
 impl fmt::Display for CliError {
@@ -144,7 +143,10 @@ mod tests {
     #[test]
     fn exit_codes_match_documented_table() {
         assert_eq!(CliError::PortInUse { port: 1 }.exit_code(), 3);
-        assert_eq!(CliError::TargetNotFound { target: "x".into() }.exit_code(), 2);
+        assert_eq!(
+            CliError::TargetNotFound { target: "x".into() }.exit_code(),
+            2
+        );
         assert_eq!(CliError::NoFiles.exit_code(), 2);
         assert_eq!(CliError::InvalidAlias { reason: "x".into() }.exit_code(), 2);
         assert_eq!(CliError::Other("x".into()).exit_code(), 1);
@@ -153,9 +155,15 @@ mod tests {
     #[test]
     fn code_constants_match_documented_strings() {
         assert_eq!(CliError::PortInUse { port: 1 }.code(), "port_in_use");
-        assert_eq!(CliError::TargetNotFound { target: "x".into() }.code(), "target_not_found");
+        assert_eq!(
+            CliError::TargetNotFound { target: "x".into() }.code(),
+            "target_not_found"
+        );
         assert_eq!(CliError::NoFiles.code(), "no_files");
-        assert_eq!(CliError::InvalidAlias { reason: "x".into() }.code(), "invalid_alias");
+        assert_eq!(
+            CliError::InvalidAlias { reason: "x".into() }.code(),
+            "invalid_alias"
+        );
         assert_eq!(CliError::Other("x".into()).code(), "error");
     }
 
@@ -244,9 +252,7 @@ mod tests {
 
     #[test]
     fn from_anyhow_classifies_generic_bind_with_port_in_message() {
-        let err = CliError::from_anyhow(anyhow::anyhow!(
-            "failed to bind to 0.0.0.0:6000"
-        ));
+        let err = CliError::from_anyhow(anyhow::anyhow!("failed to bind to 0.0.0.0:6000"));
         // The function matches "bind" + "53317" together; without 53317 it
         // falls back to Other. Verify the fallback path.
         assert!(matches!(err, CliError::Other(_)));

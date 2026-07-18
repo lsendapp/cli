@@ -4,14 +4,19 @@ use crate::alias::{self, resolve_system_locale_id};
 use crate::cli::AliasAction;
 use crate::config;
 use crate::error::CliError;
-use crate::output::{AliasRegenerateResult, AliasSetResult, AliasShowResult, OutputOptions, error_envelope, print_json};
+use crate::output::{
+    AliasRegenerateResult, AliasSetResult, AliasShowResult, OutputOptions, error_envelope,
+    print_json,
+};
 
 pub fn run(action: AliasAction, output: OutputOptions) -> Result<(), i32> {
     let config_dir = config::default_config_dir().map_err(|e| fail("alias", output, e))?;
 
     match action {
         AliasAction::Show => run_show(&config_dir, output),
-        AliasAction::Regenerate { locale } => run_regenerate(&config_dir, locale.as_deref(), output),
+        AliasAction::Regenerate { locale } => {
+            run_regenerate(&config_dir, locale.as_deref(), output)
+        }
         AliasAction::Set { name } => run_set(&config_dir, &name, output),
     }
 }
@@ -51,8 +56,7 @@ fn run_regenerate(
     let locale_id = locale
         .map(alias::resolve_locale_tag)
         .unwrap_or_else(resolve_system_locale_id);
-    let result = alias::regenerate(config_dir, locale)
-        .map_err(|e| fail("alias", output, e))?;
+    let result = alias::regenerate(config_dir, locale).map_err(|e| fail("alias", output, e))?;
 
     if output.is_json() {
         print_json(&AliasRegenerateResult {
@@ -139,7 +143,8 @@ mod tests {
     use std::fs;
 
     fn fresh_dir(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("lsend-aliascmd-{}-{}", tag, uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("lsend-aliascmd-{}-{}", tag, uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         dir
     }

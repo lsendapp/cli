@@ -66,10 +66,7 @@ mod tests {
 
     #[test]
     fn preview_decodes_utf8() {
-        assert_eq!(
-            text_preview(b"hello").as_deref(),
-            Some("hello")
-        );
+        assert_eq!(text_preview(b"hello").as_deref(), Some("hello"));
     }
 
     #[test]

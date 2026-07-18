@@ -28,7 +28,12 @@ impl AppConfig {
     pub const DEFAULT_PORT: u16 = DEFAULT_PORT;
     pub const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = DEFAULT_DISCOVERY_TIMEOUT_MS;
 
-    pub fn new(alias: Option<String>, port: u16, https: bool, receive_dir: Option<PathBuf>) -> Result<Self> {
+    pub fn new(
+        alias: Option<String>,
+        port: u16,
+        https: bool,
+        receive_dir: Option<PathBuf>,
+    ) -> Result<Self> {
         let config_dir = default_config_dir()?;
 
         fs::create_dir_all(&config_dir).with_context(|| {
@@ -98,17 +103,15 @@ mod tests {
     fn app_config_new_uses_overrides() {
         let dir = fresh_dir("overrides");
         let receive = dir.join("inbox");
-        let cfg = AppConfig::new(Some("MyAlias".into()), 12345, true, Some(receive.clone())).unwrap();
+        let cfg =
+            AppConfig::new(Some("MyAlias".into()), 12345, true, Some(receive.clone())).unwrap();
         assert_eq!(cfg.alias, "MyAlias");
         assert_eq!(cfg.port, 12345);
         assert!(cfg.https);
         assert_eq!(cfg.receive_dir, receive);
         // config dir is created and lives under the OS config root.
         assert!(cfg.config_dir.exists());
-        assert!(cfg
-            .config_dir
-            .to_string_lossy()
-            .contains("lsend"));
+        assert!(cfg.config_dir.to_string_lossy().contains("lsend"));
         let _ = fs::remove_dir_all(&dir);
     }
 

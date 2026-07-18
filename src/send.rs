@@ -399,7 +399,10 @@ async fn collect_files(paths: &[String]) -> Result<Vec<LocalFile>> {
         if path.is_dir() {
             collect_dir(&path, &path, &mut files).await?;
         } else if path.is_file() {
-            files.push(local_file_from_path(&path, &path.file_name().unwrap().to_string_lossy())?);
+            files.push(local_file_from_path(
+                &path,
+                &path.file_name().unwrap().to_string_lossy(),
+            )?);
         } else {
             bail!("Path not found: {}", path.display());
         }
@@ -483,7 +486,11 @@ mod tests {
         assert_eq!(file.file_name, "hello.txt");
         assert_eq!(file.size, 5);
         // Mime should be a string starting with "text/" for a .txt file.
-        assert!(file.file_type.starts_with("text/"), "got: {}", file.file_type);
+        assert!(
+            file.file_type.starts_with("text/"),
+            "got: {}",
+            file.file_type
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -494,7 +501,9 @@ mod tests {
         std::fs::write(dir.join("a/top.txt"), b"x").unwrap();
         std::fs::write(dir.join("a/b/nested.txt"), b"y").unwrap();
 
-        let files = collect_files(&[dir.to_string_lossy().to_string()]).await.unwrap();
+        let files = collect_files(&[dir.to_string_lossy().to_string()])
+            .await
+            .unwrap();
         assert_eq!(files.len(), 2);
         let names: Vec<_> = files.iter().map(|f| f.file_name.clone()).collect();
         // Names preserve relative paths from the root argument.

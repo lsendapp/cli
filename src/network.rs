@@ -1,7 +1,7 @@
 use std::net::Ipv4Addr;
 
 use anyhow::{Context, Result};
-use if_addrs::{get_if_addrs, IfAddr};
+use if_addrs::{IfAddr, get_if_addrs};
 use localsend::http::client::{LsHttpClient, LsHttpClientV2, LsHttpClientVersion};
 
 use crate::identity::Identity;
@@ -71,7 +71,10 @@ pub fn build_http_client(identity: &Identity, https: bool) -> Result<LsHttpClien
     }
 }
 
-pub fn build_reqwest_client(identity: &Identity, https: bool) -> Result<localsend::reqwest::Client> {
+pub fn build_reqwest_client(
+    identity: &Identity,
+    https: bool,
+) -> Result<localsend::reqwest::Client> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let mut builder = localsend::reqwest::Client::builder()

@@ -35,7 +35,11 @@ impl DiscoveryServerHandle {
     }
 }
 
-pub async fn start(config: AppConfig, identity: Identity, devices: Arc<Mutex<HashMap<String, DiscoveredDevice>>>) -> Result<DiscoveryServerHandle> {
+pub async fn start(
+    config: AppConfig,
+    identity: Identity,
+    devices: Arc<Mutex<HashMap<String, DiscoveredDevice>>>,
+) -> Result<DiscoveryServerHandle> {
     let state = DiscoveryServerState {
         config: config.clone(),
         identity: identity.clone(),
@@ -98,7 +102,13 @@ async fn register_handler(
     State(state): State<DiscoveryServerState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(payload): Json<RegisterCompat>,
-) -> Result<Json<InfoResponseDtoV2>, (axum::http::StatusCode, Json<localsend::http::dto::ErrorResponse>)> {
+) -> Result<
+    Json<InfoResponseDtoV2>,
+    (
+        axum::http::StatusCode,
+        Json<localsend::http::dto::ErrorResponse>,
+    ),
+> {
     let fingerprint = payload.fingerprint();
     if fingerprint.is_empty() {
         return Err((

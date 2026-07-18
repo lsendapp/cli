@@ -26,7 +26,11 @@ impl OutputOptions {
 
     pub fn new(json: bool, quiet: bool) -> Self {
         Self {
-            mode: if json { OutputMode::Json } else { OutputMode::Human },
+            mode: if json {
+                OutputMode::Json
+            } else {
+                OutputMode::Human
+            },
             quiet: json || quiet,
         }
     }

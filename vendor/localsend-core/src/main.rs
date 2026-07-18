@@ -218,7 +218,10 @@ async fn client_test() -> Result<()> {
         )
         .await?;
 
-    println!("Prepare Upload Response: {:?}", prepare_upload_response.response);
+    println!(
+        "Prepare Upload Response: {:?}",
+        prepare_upload_response.response
+    );
 
     Ok(())
 }

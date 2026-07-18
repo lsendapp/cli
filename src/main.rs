@@ -5,6 +5,7 @@ mod cli;
 mod config;
 mod discovery;
 mod error;
+mod events;
 mod identity;
 mod legacy;
 mod mtls;
@@ -57,14 +58,15 @@ async fn run() -> Result<(), i32> {
     } else {
         "lsend=warn"
     };
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     let https = !cli.http;
     let config =
         AppConfig::new(cli.alias, cli.port, https, None).map_err(|e| fail("lsend", output, e))?;
-    let identity =
-        Identity::load_or_create(&config.config_dir, https).map_err(|e| fail("lsend", output, e))?;
+    let identity = Identity::load_or_create(&config.config_dir, https)
+        .map_err(|e| fail("lsend", output, e))?;
 
     match cli.command {
         Commands::Agent { .. } | Commands::Alias(_) => unreachable!(),

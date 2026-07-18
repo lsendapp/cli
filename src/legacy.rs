@@ -45,15 +45,13 @@ pub async fn legacy_http_scan(
     for chunk in targets.chunks(SCAN_CONCURRENCY) {
         let mut probes = Vec::with_capacity(chunk.len());
         for ip in chunk {
-            probes.push(probe_device(
-                &raw,
-                ip,
-                port,
-                prefer_https,
-                &fingerprint,
-            ));
+            probes.push(probe_device(&raw, ip, port, prefer_https, &fingerprint));
         }
-        for device in futures_util::future::join_all(probes).await.into_iter().flatten() {
+        for device in futures_util::future::join_all(probes)
+            .await
+            .into_iter()
+            .flatten()
+        {
             found.insert(device.fingerprint.clone(), device);
         }
     }
@@ -109,7 +107,12 @@ async fn probe_info(
     Some(device_from_info(info, ip, port, https))
 }
 
-fn device_from_info(info: InfoResponseCompat, ip: &str, port: u16, https: bool) -> DiscoveredDevice {
+fn device_from_info(
+    info: InfoResponseCompat,
+    ip: &str,
+    port: u16,
+    https: bool,
+) -> DiscoveredDevice {
     DiscoveredDevice {
         alias: info.alias,
         ip: ip.to_string(),

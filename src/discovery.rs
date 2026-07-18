@@ -46,20 +46,30 @@ impl DiscoveredDevice {
 
 const MULTICAST_MIN_LISTEN_MS: u64 = 3500;
 
-pub async fn scan(config: &AppConfig, identity: &Identity, timeout_ms: u64) -> Result<Vec<DiscoveredDevice>> {
+pub async fn scan(
+    config: &AppConfig,
+    identity: &Identity,
+    timeout_ms: u64,
+) -> Result<Vec<DiscoveredDevice>> {
     let devices = Arc::new(Mutex::new(HashMap::<String, DiscoveredDevice>::new()));
     let multicast_group: Ipv4Addr = DEFAULT_MULTICAST_GROUP.parse()?;
     let listen_ms = timeout_ms.max(MULTICAST_MIN_LISTEN_MS);
 
-    let discovery_server = match start_discovery_server(config.clone(), identity.clone(), devices.clone()).await {
+    let discovery_server = match start_discovery_server(
+        config.clone(),
+        identity.clone(),
+        devices.clone(),
+    )
+    .await
+    {
         Ok(handle) => Some(handle),
         Err(e) => {
-                warn!(
-                    "Could not start discovery HTTP server on port {}: {e}. \
+            warn!(
+                "Could not start discovery HTTP server on port {}: {e}. \
                      Close any other process holding port {} (e.g. the LocalSend app, another `lsend receive`), \
                      or use another --port. Peers may only respond via UDP.",
-                    config.port, config.port
-                );
+                config.port, config.port
+            );
             None
         }
     };
@@ -79,13 +89,15 @@ pub async fn scan(config: &AppConfig, identity: &Identity, timeout_ms: u64) -> R
     let listener = if listen_sockets.is_empty() {
         None
     } else {
-        Some(start_multicast_listener(
-            config.clone(),
-            identity.clone(),
-            Some(devices.clone()),
-            listen_sockets,
+        Some(
+            start_multicast_listener(
+                config.clone(),
+                identity.clone(),
+                Some(devices.clone()),
+                listen_sockets,
+            )
+            .await?,
         )
-        .await?)
     };
 
     if !announce_sockets.is_empty() {
@@ -117,9 +129,10 @@ pub async fn scan(config: &AppConfig, identity: &Identity, timeout_ms: u64) -> R
 
 pub async fn run_responder(config: AppConfig, identity: Identity) -> Result<MulticastGuard> {
     let multicast_group: Ipv4Addr = DEFAULT_MULTICAST_GROUP.parse()?;
-    let listen_sockets =
-        open_multicast_listen_sockets(config.port, multicast_group).context("Failed to open multicast listen sockets")?;
-    let guard = start_multicast_listener(config.clone(), identity.clone(), None, listen_sockets).await?;
+    let listen_sockets = open_multicast_listen_sockets(config.port, multicast_group)
+        .context("Failed to open multicast listen sockets")?;
+    let guard =
+        start_multicast_listener(config.clone(), identity.clone(), None, listen_sockets).await?;
 
     let announce_config = config.clone();
     let announce_identity = identity.clone();
@@ -128,7 +141,13 @@ pub async fn run_responder(config: AppConfig, identity: Identity) -> Result<Mult
         if announce_sockets.is_empty() {
             return;
         }
-        if let Err(e) = send_announcement(announce_sockets, &announce_config, &announce_identity, multicast_group).await
+        if let Err(e) = send_announcement(
+            announce_sockets,
+            &announce_config,
+            &announce_identity,
+            multicast_group,
+        )
+        .await
         {
             warn!("Failed to send startup announcement: {e}");
         }
@@ -141,7 +160,14 @@ pub async fn run_responder(config: AppConfig, identity: Identity) -> Result<Mult
             if sockets.is_empty() {
                 continue;
             }
-            if let Err(e) = send_announcement(sockets, &announce_config, &announce_identity, multicast_group).await {
+            if let Err(e) = send_announcement(
+                sockets,
+                &announce_config,
+                &announce_identity,
+                multicast_group,
+            )
+            .await
+            {
                 debug!("Failed to send periodic announcement: {e}");
             }
         }
@@ -179,7 +205,14 @@ async fn start_multicast_listener(
             loop {
                 match timeout(Duration::from_secs(1), socket.recv_from(&mut buf)).await {
                     Ok(Ok((len, addr))) => {
-                        handle_datagram(&buf[..len], addr.ip(), &config, &identity, collect.as_ref()).await;
+                        handle_datagram(
+                            &buf[..len],
+                            addr.ip(),
+                            &config,
+                            &identity,
+                            collect.as_ref(),
+                        )
+                        .await;
                     }
                     Ok(Err(e)) => {
                         debug!("Multicast recv error: {e}");
@@ -204,7 +237,10 @@ async fn handle_datagram(
     let Ok(message) = serde_json::from_slice::<MulticastMessageCompat>(payload) else {
         debug!(
             "Ignored unparsable multicast payload from {source_ip}: {}",
-            String::from_utf8_lossy(payload).chars().take(200).collect::<String>()
+            String::from_utf8_lossy(payload)
+                .chars()
+                .take(200)
+                .collect::<String>()
         );
         return;
     };
@@ -247,7 +283,10 @@ async fn answer_announcement(config: &AppConfig, identity: &Identity, peer: &Dis
 
     match build_http_client(identity, peer.https) {
         Ok(client) => {
-            match client.register(protocol, &peer.ip, peer.port, payload).await {
+            match client
+                .register(protocol, &peer.ip, peer.port, payload)
+                .await
+            {
                 Ok(_) => {
                     info!(
                         "Responded to announcement from {} ({}) via HTTP /register",
@@ -340,12 +379,19 @@ async fn send_announcement(
 }
 
 /// Listen on the standard LocalSend UDP port (53317). Matches the LocalSend app listener.
-fn open_multicast_listen_sockets(port: u16, multicast_group: Ipv4Addr) -> Result<Vec<Arc<UdpSocket>>> {
+fn open_multicast_listen_sockets(
+    port: u16,
+    multicast_group: Ipv4Addr,
+) -> Result<Vec<Arc<UdpSocket>>> {
     let interfaces = list_ipv4_interfaces();
     let mut sockets = Vec::new();
 
     if interfaces.is_empty() {
-        sockets.push(create_bound_udp_socket(port, multicast_group, Ipv4Addr::UNSPECIFIED)?);
+        sockets.push(create_bound_udp_socket(
+            port,
+            multicast_group,
+            Ipv4Addr::UNSPECIFIED,
+        )?);
         return Ok(sockets);
     }
 
@@ -500,7 +546,12 @@ pub async fn resolve_target(
         .into());
     }
 
-    let devices = scan(config, identity, AppConfig::DEFAULT_DISCOVERY_TIMEOUT_MS * 4).await?;
+    let devices = scan(
+        config,
+        identity,
+        AppConfig::DEFAULT_DISCOVERY_TIMEOUT_MS * 4,
+    )
+    .await?;
     let device = devices
         .into_iter()
         .find(|d| d.alias.eq_ignore_ascii_case(target))

@@ -4,8 +4,8 @@ use std::sync::Arc;
 use rustls::client::danger::HandshakeSignatureValid;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, UnixTime};
-use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use rustls::server::WebPkiClientVerifier;
+use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use rustls::{DigitallySignedStruct, DistinguishedName, Error, RootCertStore, SignatureScheme};
 
 /// mTLS client certificate verifier that mirrors the official LocalSend core's

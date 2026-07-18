@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use rcgen::{generate_simple_self_signed, CertifiedKey};
+use rcgen::{CertifiedKey, generate_simple_self_signed};
 
 use crate::util::{fingerprint_from_cert_pem, random_fingerprint};
 
@@ -58,10 +58,8 @@ impl Identity {
 }
 
 fn generate_https_identity() -> Result<Identity> {
-    let CertifiedKey { cert, key_pair } = generate_simple_self_signed(vec![
-        "127.0.0.1".to_string(),
-        "localhost".to_string(),
-    ])?;
+    let CertifiedKey { cert, key_pair } =
+        generate_simple_self_signed(vec!["127.0.0.1".to_string(), "localhost".to_string()])?;
     let cert_pem = cert.pem();
     let key_pem = key_pair.serialize_pem();
     let fingerprint = fingerprint_from_cert_pem(&cert_pem)?;
