@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use axum::body::Body;
@@ -33,6 +33,9 @@ use crate::output::{OutputMode, ReceiveEventJson, print_json};
 /// Delay before returning 204 for embedded text messages so the mobile sender
 /// can finish its SendPage transition before reading the response.
 const TEXT_MESSAGE_RESPONSE_DELAY: Duration = Duration::from_millis(1200);
+/// Discard PIN attempt counters after this idle period to bound memory in
+/// long-running receivers (desktop app). Also prevents permanent lockout.
+const PIN_ATTEMPTS_TTL: Duration = Duration::from_secs(300);
 #[derive(Clone)]
 pub struct ServerState {
     pub config: AppConfig,
@@ -43,7 +46,7 @@ pub struct ServerState {
     stop_tx: Option<mpsc::UnboundedSender<()>>,
     event_tx: Option<mpsc::UnboundedSender<ReceiveEvent>>,
     inner: Arc<Mutex<InnerState>>,
-    pin_attempts: Arc<Mutex<HashMap<String, u32>>>,
+    pin_attempts: Arc<Mutex<HashMap<String, PinAttempts>>>,
 }
 
 struct InnerState {
@@ -72,6 +75,11 @@ struct ReceivingFileEntry {
     desired_name: String,
     path: Option<PathBuf>,
     failed: bool,
+}
+
+struct PinAttempts {
+    count: u32,
+    last: Instant,
 }
 
 impl ServerState {
@@ -330,12 +338,6 @@ async fn prepare_upload_handler(
         return response;
     }
 
-    let guard = state.inner.lock().await;
-    if guard.session.is_some() {
-        return error_response(StatusCode::CONFLICT, "Blocked by another session");
-    }
-    drop(guard);
-
     let request = match parse_prepare_upload_request(&body) {
         Ok(request) => request,
         Err(error) => {
@@ -352,6 +354,11 @@ async fn prepare_upload_handler(
     }
 
     if let Some(text) = extract_embedded_text_message(&request.files) {
+        let guard = state.inner.lock().await;
+        if guard.session.is_some() {
+            return error_response(StatusCode::CONFLICT, "Blocked by another session");
+        }
+        drop(guard);
         return handle_embedded_text_message(state, &request.sender_alias, text).await;
     }
 
@@ -378,6 +385,14 @@ async fn prepare_upload_handler(
         );
     }
 
+    // Check for an active session and install the new one in one critical
+    // section to close the TOCTOU window between the conflict check and
+    // session installation.
+    let mut guard = state.inner.lock().await;
+    if guard.session.is_some() {
+        return error_response(StatusCode::CONFLICT, "Blocked by another session");
+    }
+
     state.notify_human(format!(
         "Incoming transfer from {} ({} file(s))",
         request.sender_alias,
@@ -396,7 +411,6 @@ async fn prepare_upload_handler(
         file_count: file_count_for_event,
     });
 
-    let mut guard = state.inner.lock().await;
     guard.session = Some(ReceiveSession {
         session_id: session_id.clone(),
         sender_ip,
@@ -405,6 +419,7 @@ async fn prepare_upload_handler(
         files: session_files,
         status: SessionStatus::Sending,
     });
+    drop(guard);
 
     if v2_api {
         Json(PrepareUploadResponseDtoV2 {
@@ -1022,8 +1037,14 @@ async fn check_pin(
     };
 
     let mut attempts_guard = state.pin_attempts.lock().await;
-    let attempts = attempts_guard.entry(client_ip.to_string()).or_insert(0);
-    if *attempts >= 3 {
+    // Evict idle entries so the map stays bounded in long-running receivers.
+    let now = Instant::now();
+    attempts_guard.retain(|_, entry| now.duration_since(entry.last) < PIN_ATTEMPTS_TTL);
+
+    let entry = attempts_guard
+        .entry(client_ip.to_string())
+        .or_insert_with(|| PinAttempts { count: 0, last: now });
+    if entry.count >= 3 {
         return Some(error_response(
             StatusCode::TOO_MANY_REQUESTS,
             "Too many attempts.",
@@ -1042,8 +1063,9 @@ async fn check_pin(
         Some(value) if value == expected.as_str() => None,
         Some(_) => {
             // Non-empty wrong PIN: count the attempt.
-            let previous = *attempts;
-            *attempts = previous + 1;
+            let previous = entry.count;
+            entry.count = previous + 1;
+            entry.last = now;
             if previous == 2 {
                 Some(error_response(
                     StatusCode::TOO_MANY_REQUESTS,
