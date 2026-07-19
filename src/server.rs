@@ -146,12 +146,54 @@ impl ServerState {
             let _ = tx.send(event);
         }
     }
+
+    /// Check if every file in the session is done (saved or failed) and
+    /// transition the session status accordingly. On success the session is
+    /// cleared; on partial failure it stays alive for sender retry.
+    ///
+    /// Extracted so both the save-success and save-error paths call it -
+    /// previously the error path returned early and could leave the session
+    /// stuck in `Sending` when the last file failed.
+    fn maybe_complete_session(&self, session_slot: &mut Option<ReceiveSession>) {
+        let Some(session) = session_slot.as_mut() else {
+            return;
+        };
+        let all_done = session
+            .files
+            .values()
+            .all(|f| f.path.is_some() || f.failed);
+        if !all_done {
+            return;
+        }
+        let has_error = session.files.values().any(|f| f.failed);
+        if has_error {
+            // Keep the session alive so the sender can retry failed files.
+            session.status = SessionStatus::FinishedWithErrors;
+            self.notify_human("Transfer finished with errors.");
+            if self.output == OutputMode::Json {
+                self.emit_json_event(ReceiveEventJson::TransferFinishedWithErrors);
+            }
+            self.emit_event(ReceiveEvent::TransferFinishedWithErrors);
+        } else {
+            session.status = SessionStatus::Finished;
+            self.notify_human("Transfer complete.");
+            if self.output == OutputMode::Json {
+                self.emit_json_event(ReceiveEventJson::TransferComplete);
+            }
+            self.emit_event(ReceiveEvent::TransferComplete);
+            *session_slot = None;
+            if self.stop_after_transfer {
+                if let Some(tx) = &self.stop_tx {
+                    let _ = tx.send(());
+                }
+            }
+        }
+    }
 }
 
-pub async fn run_http(state: ServerState, addr: SocketAddr) -> Result<()> {
+pub async fn run_http(state: ServerState, listener: tokio::net::TcpListener) -> Result<()> {
     let app = build_router(state);
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!("Listening on http://{addr}");
+    tracing::info!("Listening on http://{}", listener.local_addr()?);
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -160,7 +202,7 @@ pub async fn run_http(state: ServerState, addr: SocketAddr) -> Result<()> {
     Ok(())
 }
 
-pub async fn run_https(state: ServerState, addr: SocketAddr) -> Result<()> {
+pub async fn run_https(state: ServerState, listener: tokio::net::TcpListener) -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     use rustls::pki_types::pem::PemObject;
@@ -188,14 +230,24 @@ pub async fn run_https(state: ServerState, addr: SocketAddr) -> Result<()> {
     let config = RustlsConfig::from_config(Arc::new(server_config));
 
     let app = build_router(state);
+    let addr = listener.local_addr()?;
     tracing::info!("Listening on https://{addr} (mTLS: client cert required)");
-    axum_server::bind_rustls(addr, config)
+    // Convert the tokio listener to std for axum-server; the port is already
+    // bound so discovery can announce immediately after this returns.
+    let std_listener = listener.into_std()?;
+    axum_server::from_tcp_rustls(std_listener, config)
         .serve(app.into_make_service_with_connect_info::<SocketAddr>())
         .await?;
     Ok(())
 }
 
 fn build_router(state: ServerState) -> Router {
+    // Upload routes handle arbitrary-size file bodies; the 10 MB limit applies
+    // only to JSON metadata routes (info/register/prepare-upload/cancel).
+    let upload_routes = Router::new()
+        .route("/api/localsend/v1/send", post(upload_v1_handler))
+        .route("/api/localsend/v2/upload", post(upload_v2_handler));
+
     Router::new()
         .route("/api/localsend/v1/info", get(info_v1_handler))
         .route("/api/localsend/v2/info", get(info_handler))
@@ -209,11 +261,10 @@ fn build_router(state: ServerState) -> Router {
             "/api/localsend/v2/prepare-upload",
             post(prepare_upload_v2_handler),
         )
-        .route("/api/localsend/v1/send", post(upload_v1_handler))
-        .route("/api/localsend/v2/upload", post(upload_v2_handler))
         .route("/api/localsend/v1/cancel", post(cancel_handler))
         .route("/api/localsend/v2/cancel", post(cancel_handler))
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
+        .merge(upload_routes)
         .with_state(state)
 }
 
@@ -758,7 +809,18 @@ async fn upload_handler(
 
     let target_path = match prepare_receive_path(&destination_dir, &desired_name).await {
         Ok(path) => path,
-        Err(message) => return error_response(StatusCode::FORBIDDEN, &message),
+        Err(message) => {
+            // Path validation failed (e.g. traversal). Mark the file as
+            // failed so the session can transition instead of getting stuck.
+            let mut guard = state.inner.lock().await;
+            if let Some(session) = guard.session.as_mut() {
+                if let Some(entry) = session.files.get_mut(&file_id) {
+                    entry.failed = true;
+                }
+                state.maybe_complete_session(&mut guard.session);
+            }
+            return error_response(StatusCode::FORBIDDEN, &message);
+        }
     };
 
     let save_result = save_stream(body, &target_path).await;
@@ -771,7 +833,10 @@ async fn upload_handler(
         return error_response(StatusCode::FORBIDDEN, "Invalid token");
     };
 
-    match save_result {
+    // Record the outcome without returning early on error: the session
+    // transition check below must run even when the last file fails,
+    // otherwise the session is stuck in `Sending` forever.
+    let save_error: Option<String> = match save_result {
         Ok(bytes) => {
             entry.path = Some(target_path.clone());
             entry.failed = false;
@@ -788,41 +853,22 @@ async fn upload_handler(
                 file_name: desired_name,
                 size: bytes,
             });
+            None
         }
         Err(e) => {
             entry.failed = true;
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
+            Some(e.to_string())
         }
-    }
+    };
 
-    let all_done = session.files.values().all(|f| f.path.is_some() || f.failed);
-    if all_done {
-        let has_error = session.files.values().any(|f| f.failed);
-        if has_error {
-            // Keep the session alive so the sender can retry failed files.
-            session.status = SessionStatus::FinishedWithErrors;
-            state.notify_human("Transfer finished with errors.");
-            if state.output == OutputMode::Json {
-                state.emit_json_event(ReceiveEventJson::TransferFinishedWithErrors);
-            }
-            state.emit_event(ReceiveEvent::TransferFinishedWithErrors);
-        } else {
-            session.status = SessionStatus::Finished;
-            state.notify_human("Transfer complete.");
-            if state.output == OutputMode::Json {
-                state.emit_json_event(ReceiveEventJson::TransferComplete);
-            }
-            state.emit_event(ReceiveEvent::TransferComplete);
-            guard.session = None;
-            if state.stop_after_transfer {
-                if let Some(tx) = &state.stop_tx {
-                    let _ = tx.send(());
-                }
-            }
-        }
-    }
+    // Transition the session (complete / finished-with-errors / keep alive).
+    // Runs on both success and error paths.
+    state.maybe_complete_session(&mut guard.session);
 
-    StatusCode::OK.into_response()
+    match save_error {
+        Some(msg) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &msg),
+        None => StatusCode::OK.into_response(),
+    }
 }
 
 /// Outcome of evaluating a cancel request against the current session state.
@@ -2171,6 +2217,89 @@ mod integration_tests {
         )
         .await;
         assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Regression: when the last file in a session fails to save, the session
+    /// must transition to `FinishedWithErrors` and emit the event. Previously
+    /// the error path returned early and the session was stuck in `Sending`
+    /// forever, blocking all future transfers.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn upload_failure_emits_transfer_finished_with_errors() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = fresh_dir("upload-fail");
+        let cfg = AppConfig::new(
+            Some("Tester".into()),
+            53317,
+            true,
+            Some(dir.to_path_buf()),
+        )
+        .expect("config");
+        let identity = Identity {
+            cert_pem: String::new(),
+            key_pem: String::new(),
+            fingerprint: "test-fp".to_string(),
+        };
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel::<ReceiveEvent>();
+        let state = ServerState::new_with_events(
+            cfg,
+            identity,
+            None,
+            OutputMode::Json,
+            false,
+            None,
+            Some(event_tx),
+        );
+
+        // Establish a session with one file.
+        let body = make_prepare_body("2.1", 1);
+        let (_, _, resp) = call(
+            &state,
+            json_request("POST", "/api/localsend/v2/prepare-upload", Some(&body)),
+            peer_addr(),
+        )
+        .await;
+        let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+        let sid = json["sessionId"].as_str().unwrap().to_string();
+        let token = json["files"]["f1"].as_str().unwrap().to_string();
+
+        // Make the receive directory read-only so File::create fails inside
+        // save_stream.
+        let perms = std::fs::Permissions::from_mode(0o555);
+        std::fs::set_permissions(&dir, perms).unwrap();
+
+        let upload_uri = format!(
+            "/api/localsend/v2/upload?sessionId={}&fileId=f1&token={}",
+            sid, token
+        );
+        let req = Request::builder()
+            .method("POST")
+            .uri(&upload_uri)
+            .header("content-type", "application/octet-stream")
+            .body(Body::from(b"abcd".to_vec()))
+            .unwrap();
+        let (status, _, _) = call(&state, req, peer_addr()).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+
+        // Restore permissions for cleanup.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // TransferFinishedWithErrors must have been emitted. Without the fix
+        // the error path returned early and this event never fired.
+        let mut found = false;
+        while let Ok(ev) = event_rx.try_recv() {
+            if matches!(ev, ReceiveEvent::TransferFinishedWithErrors) {
+                found = true;
+                break;
+            }
+        }
+        assert!(
+            found,
+            "expected TransferFinishedWithErrors after upload failure"
+        );
+
         std::fs::remove_dir_all(&dir).ok();
     }
 }

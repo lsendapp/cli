@@ -47,6 +47,12 @@ pub async fn start(
     };
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
+    // Bind before spawning so the port is known to be available before
+    // multicast announcements go out - no 100 ms sleep guesswork.
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("Failed to bind discovery server on port {}", config.port))?;
+
     let app = Router::new()
         .route("/api/localsend/v1/info", get(info_handler))
         .route("/api/localsend/v2/info", get(info_handler))
@@ -63,27 +69,19 @@ pub async fn start(
         )
         .await
         .context("Failed to load TLS config for discovery server")?;
-
+        let std_listener = listener.into_std()?;
         tokio::spawn(async move {
-            if let Err(e) = axum_server::bind_rustls(addr, tls).serve(app).await {
+            if let Err(e) = axum_server::from_tcp_rustls(std_listener, tls).serve(app).await {
                 debug!("Discovery HTTPS server stopped: {e}");
             }
         })
     } else {
         tokio::spawn(async move {
-            match tokio::net::TcpListener::bind(addr).await {
-                Ok(listener) => {
-                    if let Err(e) = axum::serve(listener, app).await {
-                        debug!("Discovery HTTP server stopped: {e}");
-                    }
-                }
-                Err(e) => debug!("Discovery HTTP server bind failed: {e}"),
+            if let Err(e) = axum::serve(listener, app).await {
+                debug!("Discovery HTTP server stopped: {e}");
             }
         })
     };
-
-    // Give the server a moment to bind before multicast announcements go out.
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     info!(
         "Discovery {} server listening on port {}",

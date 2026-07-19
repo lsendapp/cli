@@ -35,17 +35,35 @@ pub fn list_ipv4_interfaces() -> Vec<Ipv4Addr> {
 
 fn is_usable_interface(name: &str, ip: Ipv4Addr) -> bool {
     let lower = name.to_ascii_lowercase();
+
+    // Common: loopback and bridge interfaces are never useful for LAN
+    // multicast discovery.
+    if lower.starts_with("lo") || lower.starts_with("bridge") {
+        return false;
+    }
+
+    // macOS-specific virtual / tunnel interfaces.
+    #[cfg(target_os = "macos")]
     if lower.starts_with("utun")
         || lower.starts_with("gif")
         || lower.starts_with("stf")
-        || lower.starts_with("bridge")
-        || lower.starts_with("lo")
         || lower.starts_with("awdl")
         || lower.starts_with("llw")
     {
         return false;
     }
 
+    // Linux-specific container / virtual interfaces.
+    #[cfg(target_os = "linux")]
+    if lower.starts_with("docker")
+        || lower.starts_with("veth")
+        || lower.starts_with("br-")
+        || lower.starts_with("virbr")
+    {
+        return false;
+    }
+
+    // Benchmarking (198.18.0.0/15) and CGNAT (100.64.0.0/10) ranges.
     let octets = ip.octets();
     if octets[0] == 198 && (octets[1] == 18 || octets[1] == 19) {
         return false;

@@ -1,10 +1,8 @@
 use std::net::SocketAddr;
-use std::time::Duration;
 
 use anyhow::Result;
 use tokio::signal;
 use tokio::sync::mpsc;
-use tokio::time::sleep;
 
 use crate::config::AppConfig;
 use crate::discovery;
@@ -20,8 +18,6 @@ pub async fn run(
     output: OutputOptions,
     once: bool,
 ) -> Result<()> {
-    crate::port::ensure_available(config.port).await?;
-
     let (stop_tx, mut stop_rx) = mpsc::unbounded_channel::<()>();
 
     let state = ServerState::new(
@@ -33,18 +29,20 @@ pub async fn run(
         Some(stop_tx),
     );
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
+    // Bind before spawning so the port is known to be available before
+    // discovery announcements go out - no 100 ms sleep guesswork.
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|_| crate::error::CliError::PortInUse { port: config.port })?;
     let server_config = config.clone();
 
     let server_task = tokio::spawn(async move {
         if server_config.https {
-            run_https(state, addr).await
+            run_https(state, listener).await
         } else {
-            run_http(state, addr).await
+            run_http(state, listener).await
         }
     });
-
-    // Give the HTTP server a moment to bind before discovery announcements go out.
-    sleep(Duration::from_millis(100)).await;
 
     let _responder = discovery::run_responder(config.clone(), identity).await?;
 
@@ -102,8 +100,6 @@ pub async fn run_with_events(
     mpsc::UnboundedSender<()>,
     mpsc::UnboundedReceiver<ReceiveEvent>,
 )> {
-    crate::port::ensure_available(config.port).await?;
-
     let (stop_tx, mut stop_rx) = mpsc::unbounded_channel::<()>();
     let (event_tx, event_rx) = mpsc::unbounded_channel::<ReceiveEvent>();
 
@@ -117,19 +113,21 @@ pub async fn run_with_events(
         Some(event_tx.clone()),
     );
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
+    // Bind before spawning so the port is known to be available before
+    // discovery announcements go out - no 100 ms sleep guesswork.
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|_| crate::error::CliError::PortInUse { port: config.port })?;
     let server_config = config.clone();
 
     let server_task = tokio::spawn(async move {
         let _ = if server_config.https {
             let _ = rustls::crypto::ring::default_provider().install_default();
-            run_https(state, addr).await
+            run_https(state, listener).await
         } else {
-            run_http(state, addr).await
+            run_http(state, listener).await
         };
     });
-
-    // Give the HTTP server a moment to bind before discovery announcements go out.
-    sleep(Duration::from_millis(100)).await;
 
     // Start the multicast discovery responder so peers can find us by UDP scan.
     // Failure here is non-fatal for the desktop app: receive still works for

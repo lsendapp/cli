@@ -25,21 +25,28 @@ use crate::text_send::{
 
 const CHUNK_SIZE: usize = 512 * 1024;
 
+/// Inputs for a send operation. Grouped into a struct to avoid error-prone
+/// positional bool/Option arguments at call sites.
+#[derive(Debug, Clone)]
+pub struct SendRequest<'a> {
+    pub target: &'a str,
+    pub paths: &'a [String],
+    pub text_stdin: bool,
+    pub message: Option<&'a str>,
+    pub clipboard: bool,
+    pub pin: Option<&'a str>,
+    pub no_scan: bool,
+}
+
 pub async fn send_files(
     config: &AppConfig,
     identity: &Identity,
-    target: &str,
-    paths: &[String],
-    text_stdin: bool,
-    message: Option<&str>,
-    clipboard: bool,
-    pin: Option<&str>,
-    no_scan: bool,
+    request: &SendRequest<'_>,
     output: OutputOptions,
 ) -> Result<()> {
-    let (device, resolved_via) = resolve_target(target, config, identity, !no_scan).await?;
-    let is_message = is_message_send(text_stdin, message.is_some(), clipboard);
-    let files = collect_inputs(paths, text_stdin, message, clipboard).await?;
+    let (device, resolved_via) = resolve_target(request.target, config, identity, !request.no_scan).await?;
+    let is_message = is_message_send(request.text_stdin, request.message.is_some(), request.clipboard);
+    let files = collect_inputs(request.paths, request.text_stdin, request.message, request.clipboard).await?;
     if files.is_empty() {
         return Err(CliError::NoFiles.into());
     }
@@ -112,7 +119,7 @@ pub async fn send_files(
                 device.port,
                 None,
                 prepare_payload,
-                pin,
+                request.pin,
             )
             .await?
         }
@@ -268,7 +275,7 @@ async fn upload_file(
             )
             .await
         }
-        LsHttpClient::V3(_) => unreachable!(),
+        LsHttpClient::V3(_) => bail!("v3 client is not supported by this CLI"),
     };
 
     reader_task.await??;

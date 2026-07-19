@@ -81,20 +81,20 @@ async fn run() -> Result<(), i32> {
             clipboard,
             pin,
             no_scan,
-        } => send::send_files(
-            &config,
-            &identity,
-            &target,
-            &paths,
-            text,
-            message.as_deref(),
-            clipboard,
-            pin.as_deref(),
-            no_scan,
-            output,
-        )
-        .await
-        .map_err(|e| fail("send", output, e))?,
+        } => {
+            let request = send::SendRequest {
+                target: &target,
+                paths: &paths,
+                text_stdin: text,
+                message: message.as_deref(),
+                clipboard,
+                pin: pin.as_deref(),
+                no_scan,
+            };
+            send::send_files(&config, &identity, &request, output)
+                .await
+                .map_err(|e| fail("send", output, e))?
+        }
         Commands::Receive { dir, once, pin } => {
             let mut config = config;
             if let Some(dir) = dir {
